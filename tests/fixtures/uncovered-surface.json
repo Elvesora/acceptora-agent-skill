@@ -1,0 +1,115 @@
+{
+  "fixture_id": "reconciliation.uncovered-surface.v1",
+  "purpose": "Prove reconciliation rejects an adapter-observed changed surface that has no active item, structured limit, or exception coverage.",
+  "request_contract": "contracts/v1/tools/reconcile-checklist.input.schema.json",
+  "request": {
+    "feature_id": "feat_01J00000000000000000000002",
+    "base_checklist_revision": 1,
+    "source_descriptor": {
+      "source_kind": "git",
+      "source_locator": "example/uncovered-surface",
+      "opaque_revision": "fixture-uncovered",
+      "base_revision": "fixture-covered",
+      "adapter_kind": "git-working-tree",
+      "adapter_version": "1.0.0",
+      "metadata": {}
+    },
+    "source_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "source_manifest": {
+      "schema_version": 1,
+      "base_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "current_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "entries": [
+        {
+          "anchor": "route:POST:/api/v1/subscriptions/cancel",
+          "change_kind": "modified",
+          "observed_by": "registered_derived"
+        }
+      ],
+      "ignored_entries": []
+    },
+    "implementation_change_summary": "Changes a cancellation route but proposes no corresponding coverage.",
+    "intent_summary": "Preserve a safe subscription cancellation flow.",
+    "scope_summary": "Synthetic subscription cancellation endpoint.",
+    "expected_outcome": "The service rejects this incomplete desired state.",
+    "preconditions": [],
+    "automated_evidence": [],
+    "known_limits": [],
+    "sections": [
+      {
+        "semantic_key": "primary.subscription",
+        "title": "Subscription behavior",
+        "description": "Existing unrelated subscription checks.",
+        "display_order": 0,
+        "collapsed_default": false,
+        "pattern_key": "billing-entitlements"
+      }
+    ],
+    "items": [
+      {
+        "item_id": "item_01J00000000000000000000004",
+        "item_revision_id": "irev_01J00000000000000000000004",
+        "semantic_key": "billing.subscription.status_visible",
+        "section_semantic_key": "primary.subscription",
+        "display_order": 0,
+        "operation": "retain",
+        "operation_reason": "The existing status display definition is unchanged.",
+        "title": "Confirm subscription status is visible",
+        "action": "Open the synthetic billing summary and inspect the status label.",
+        "expected_result": "The fixture shows the active status label.",
+        "why_it_matters": "The user must understand current entitlement state.",
+        "preconditions": [],
+        "environment": "Synthetic fixture",
+        "target": "component:SubscriptionStatus",
+        "test_data": [],
+        "coverage_anchors": [
+          "component:SubscriptionStatus"
+        ],
+        "source_references": [],
+        "risk": "normal",
+        "required": true,
+        "estimated_seconds": 30,
+        "production_impact": false,
+        "side_effect_warning": null,
+        "invalidation_reason": null
+      }
+    ],
+    "addressed_resolution_ids": [],
+    "versions": {
+      "integration_name": "acceptora-fixture-client",
+      "integration_version": "1.0.0",
+      "skill_version": "1.0.0",
+      "contract_version": "1.0.0"
+    },
+    "idempotency_key": "00000000-0000-4000-8000-000000000003"
+  },
+  "prior_state": {
+    "checklist_revision": 1,
+    "decisions": [
+      {
+        "item_id": "item_01J00000000000000000000004",
+        "decision": "accepted"
+      }
+    ]
+  },
+  "expected_contract": "contracts/v1/error.schema.json",
+  "expected": {
+    "error": {
+      "code": "UNCOVERED_CHANGED_SURFACE",
+      "message": "One adapter-observed changed surface is not covered.",
+      "http_status": 422,
+      "retryable": false,
+      "correlation_id": "corr-uncovered-surface",
+      "details": {
+        "anchors": [
+          "route:POST:/api/v1/subscriptions/cancel"
+        ]
+      },
+      "recovery_instruction": "Add or map an active item, a policy-valid structured limit, or an approved exception."
+    }
+  },
+  "assertions": [
+    "No checklist revision, audit mutation, or outbox event is committed for the rejected desired state.",
+    "The uncovered route is named without suppressing it."
+  ]
+}

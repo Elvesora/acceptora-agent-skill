@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/schemas/settings.schema.json",
+  "mcpServers": {
+    "acceptora": {
+      "httpUrl": "https://verify.example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ACCEPTORA_AGENT_TOKEN}"
+      },
+      "timeout": 600000,
+      "trust": false
+    }
+  }
+}

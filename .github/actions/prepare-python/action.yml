@@ -1,0 +1,56 @@
+name: Prepare owner-only Python runtime
+description: Copy the selected Linux Python executable into an owner-controlled path.
+
+runs:
+  using: composite
+  steps:
+    - name: Copy and verify Python
+      shell: bash
+      run: |
+        set -euo pipefail
+        source_python="$(python -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
+        safe_root="$HOME/.acceptora-ci-python"
+        safe_python="$safe_root/python"
+        current_uid="$(id -u)"
+
+        case "$source_python" in
+          /*) ;;
+          *) echo "Python did not report an absolute executable path." >&2; exit 1 ;;
+        esac
+        test -f "$source_python"
+        test -x "$source_python"
+        test ! -L "$source_python"
+        test "$(od -An -tx1 -N4 "$source_python" | tr -d '[:space:]')" = '7f454c46'
+        test ! -e "$safe_root"
+
+        umask 077
+        install -d -m 700 -- "$safe_root"
+        install -m 700 -- "$source_python" "$safe_python"
+        test -f "$safe_python"
+        test -x "$safe_python"
+        test ! -L "$safe_python"
+        cmp -s -- "$source_python" "$safe_python"
+        test "$(realpath -e -- "$safe_python")" = "$safe_python"
+
+        candidate="$safe_python"
+        while true; do
+          test ! -L "$candidate"
+          owner="$(stat -c '%u' -- "$candidate")"
+          mode="$(stat -c '%a' -- "$candidate")"
+          if [ "$owner" != '0' ] && [ "$owner" != "$current_uid" ]; then
+            echo "Unsafe Python owner at $candidate." >&2
+            exit 1
+          fi
+          if (( (8#$mode & 0022) != 0 )); then
+            echo "Replaceable Python ancestor at $candidate." >&2
+            exit 1
+          fi
+          if [ "$candidate" = '/' ]; then
+            break
+          fi
+          candidate="$(dirname -- "$candidate")"
+        done
+
+        reported_python="$("$safe_python" -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
+        test "$reported_python" = "$safe_python"
+        printf 'SAFE_PYTHON=%s\n' "$safe_python" >> "$GITHUB_ENV"

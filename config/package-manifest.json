@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "skill": {
+    "name": "verify-generated-work",
+    "version": "1.0.0"
+  },
+  "integration": {
+    "name": "verify-generated-work",
+    "version": "1.0.0"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "mcp_protocol_version": "2025-11-25"
+  },
+  "server": {
+    "name": "Acceptora Verification",
+    "version": "1.0.0"
+  },
+  "supported_clients": [
+    "codex",
+    "claude-code",
+    "gemini-cli"
+  ],
+  "reference_client_builds": {
+    "codex": "codex-cli 0.147.0",
+    "claude-code": "2.1.114",
+    "gemini-cli": "0.24.5"
+  },
+  "minimum_client_builds": {
+    "codex": "codex-cli 0.144.0"
+  },
+  "transports": {
+    "mcp": "/mcp",
+    "rest": "/api/v1/integrations",
+    "openapi": "/api/v1/integrations/openapi.json"
+  },
+  "tools": [
+    {
+      "name": "resolve_feature",
+      "required_scope": "features:resolve",
+      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
+      "input_schema_sha256": "sha256:20274cb34644f31cfa1b13108d72fcbdb2840b5c253297082e550d6a43031e41",
+      "output_schema_sha256": "sha256:2ee626547b2c5ae454cb2f2d82fd8e6bfc99ac3e0014e8a9ab6e5961ed8d3b07"
+    },
+    {
+      "name": "get_feature_context",
+      "required_scope": "features:read",
+      "annotations": {"readOnlyHint": true, "openWorldHint": false},
+      "input_schema_sha256": "sha256:ed790ed2728ab9bec2bd4ce19416dc34d8601bdc24c007062ffd1d04be27f3e3",
+      "output_schema_sha256": "sha256:5191d0b38016299ef8be107e4377c2003f390c6364e39464b6af9d7305d00945"
+    },
+    {
+      "name": "reconcile_checklist",
+      "required_scope": "checklists:write",
+      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
+      "input_schema_sha256": "sha256:be62a51b831320fda2e7f784c43d388121d2c9dfd340e88eb975312cb04e0357",
+      "output_schema_sha256": "sha256:5251c962bfe3bfaa99b445dc54c11e5c24182219d55cb83434c34e2d42f3b39b"
+    },
+    {
+      "name": "get_verification_feedback",
+      "required_scope": "feedback:read",
+      "annotations": {"readOnlyHint": true, "openWorldHint": false},
+      "input_schema_sha256": "sha256:f0623c224fe90c7c7d5c4aab06828b429a878e73a4b92bc297e71094c85e24b8",
+      "output_schema_sha256": "sha256:c761291148a841141a6af25f37396257c3d56d546a6e11f1c49c447a32adc34a"
+    },
+    {
+      "name": "address_feedback",
+      "required_scope": "feedback:address",
+      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
+      "input_schema_sha256": "sha256:c8bf7c22d7f82523fca19e3fc20b86d4597b2372cdff9f5dc418647294bfe83b",
+      "output_schema_sha256": "sha256:32be21fa83fe94b4e6a9cb7515a210b222ec3830feb315ff7eff8feb61652f4e"
+    },
+    {
+      "name": "get_verification_status",
+      "required_scope": "features:read",
+      "annotations": {"readOnlyHint": true, "openWorldHint": false},
+      "input_schema_sha256": "sha256:cf5df082583f619b1901d08e401808cadfc797c0067e0741907d93d933a75c69",
+      "output_schema_sha256": "sha256:0aadd3c9ac185be9ed9012ee6df7131727053de1b0c14d5a95994bf7247435a6"
+    },
+    {
+      "name": "check_completion_gate",
+      "required_scope": "gates:read",
+      "annotations": {"readOnlyHint": true, "openWorldHint": false},
+      "input_schema_sha256": "sha256:a855b0fb4d7eab4a295648a755fd209392a7d3b0d175860a830126063a015355",
+      "output_schema_sha256": "sha256:ccf8658876e3bb2dd780e6c749dd5aa3b6297d4e2cf4ff2bb83fbc7ac22366d2"
+    },
+    {
+      "name": "record_verification_exception",
+      "required_scope": "exceptions:write",
+      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
+      "input_schema_sha256": "sha256:6c96928e2df39272b60b37dda9f3bdfd904077202be1db7b9daa8934b646fd96",
+      "output_schema_sha256": "sha256:81b5c4dfc43c9bee8212cec2f9cfa1865bba60d4bc80b7c960ffc33d7b2edecd"
+    }
+  ]
+}

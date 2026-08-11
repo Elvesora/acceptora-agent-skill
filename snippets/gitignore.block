@@ -1,0 +1,3 @@
+# Agent Verification local session/recovery state
+.verification/session-state/
+.verification/outbox/

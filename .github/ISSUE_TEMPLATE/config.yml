@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Acceptora support
+    url: https://www.acceptora.com/contact
+    about: Get help with accounts, billing, credentials, projects, canonical origins, or the hosted service.
+  - name: Private security report
+    url: https://github.com/Elvesora/acceptora-agent-skill/security/advisories/new
+    about: Report suspected vulnerabilities privately. Do not open a public issue.

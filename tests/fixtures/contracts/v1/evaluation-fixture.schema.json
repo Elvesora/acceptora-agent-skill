@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/evaluation-fixture.schema.json",
+  "title": "Acceptora skill evaluation fixture",
+  "description": "A grounded skill evaluation scenario. This is not an MCP request/response fixture envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_id",
+    "scenario_type",
+    "purpose",
+    "request",
+    "source_state",
+    "prior_state",
+    "expected",
+    "assertions"
+  ],
+  "properties": {
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^evaluation\\.[a-z0-9]+(?:-[a-z0-9]+)*\\.v1$",
+      "maxLength": 200
+    },
+    "scenario_type": {
+      "type": "string",
+      "enum": [
+        "auth_change",
+        "bug_fix",
+        "content_change",
+        "decision_clearing",
+        "idempotency_separation",
+        "integration",
+        "limit_downgrade",
+        "migration",
+        "ui_feature"
+      ]
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "intent_summary",
+        "changed_surfaces",
+        "checklist_requirements"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "intent_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "changed_surfaces": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "anchor",
+              "change_kind"
+            ],
+            "properties": {
+              "anchor": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 500,
+                "pattern": "^(file|route|api|component|config|data|content|global|service|endpoint|migration|model):.+$"
+              },
+              "change_kind": {
+                "type": "string",
+                "enum": [
+                  "added",
+                  "modified",
+                  "deleted",
+                  "renamed"
+                ]
+              }
+            }
+          }
+        },
+        "checklist_requirements": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "semantic_key",
+              "coverage_anchors"
+            ],
+            "properties": {
+              "semantic_key": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 200,
+                "pattern": "^[a-z0-9][a-z0-9._:-]+$"
+              },
+              "coverage_anchors": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 4,
+                  "maxLength": 500,
+                  "pattern": "^(file|route|api|component|config|data|content|global|service|endpoint|migration|model):.+$"
+                }
+              },
+              "proposed_limit": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "blocks_acceptance",
+                  "summary"
+                ],
+                "properties": {
+                  "blocks_acceptance": {
+                    "type": "boolean"
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "source_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_revision",
+        "current_revision",
+        "current_digest"
+      ],
+      "properties": {
+        "baseline_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "current_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "current_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "prior_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_status",
+        "checklist_revision",
+        "human_decisions"
+      ],
+      "properties": {
+        "feature_status": {
+          "type": "string",
+          "enum": [
+            "drafting",
+            "ready_for_verification",
+            "verification_in_progress",
+            "changes_requested",
+            "blocked",
+            "ready_for_recheck",
+            "ready_for_acceptance",
+            "accepted",
+            "no_manual_verification_required",
+            "stale",
+            "sync_failed",
+            "archived"
+          ]
+        },
+        "checklist_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "human_decisions": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "semantic_key",
+              "decision"
+            ],
+            "properties": {
+              "semantic_key": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 200,
+                "pattern": "^[a-z0-9][a-z0-9._:-]+$"
+              },
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "accepted",
+                  "declined",
+                  "blocked",
+                  "skipped",
+                  "cleared"
+                ]
+              },
+              "comment": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 5000
+              }
+            }
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "properties",
+        "prohibited_outcomes"
+      ],
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": [
+            "drafting",
+            "ready_for_verification",
+            "verification_in_progress",
+            "changes_requested",
+            "blocked",
+            "ready_for_recheck",
+            "ready_for_acceptance",
+            "accepted",
+            "no_manual_verification_required",
+            "stale",
+            "sync_failed",
+            "archived",
+            "rejected"
+          ]
+        },
+        "properties": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "prohibited_outcomes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    }
+  }
+}

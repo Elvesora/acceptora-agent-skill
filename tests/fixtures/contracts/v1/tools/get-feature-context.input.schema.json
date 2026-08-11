@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/get-feature-context.input.schema.json",
+  "title": "get_feature_context input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "include",
+    "versions"
+  ],
+  "properties": {
+    "feature_id": {
+      "$ref": "../common.schema.json#/$defs/featureId"
+    },
+    "include": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 6,
+      "items": {
+        "type": "string",
+        "enum": [
+          "checklist_definitions",
+          "decisions",
+          "comments",
+          "attachments",
+          "history_summary",
+          "source_revisions"
+        ]
+      }
+    },
+    "since_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "versions": {
+      "$ref": "../common.schema.json#/$defs/versions"
+    }
+  }
+}

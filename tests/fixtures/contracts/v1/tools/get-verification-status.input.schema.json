@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/get-verification-status.input.schema.json",
+  "title": "get_verification_status input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "versions"
+  ],
+  "properties": {
+    "feature_id": {
+      "$ref": "../common.schema.json#/$defs/featureId"
+    },
+    "versions": {
+      "$ref": "../common.schema.json#/$defs/versions"
+    }
+  }
+}

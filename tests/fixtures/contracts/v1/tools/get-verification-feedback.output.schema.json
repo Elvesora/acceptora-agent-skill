@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/get-verification-feedback.output.schema.json",
+  "title": "get_verification_feedback output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "current_checklist_revision",
+    "feedback",
+    "page",
+    "correlation_id"
+  ],
+  "properties": {
+    "feature_id": {
+      "$ref": "../common.schema.json#/$defs/featureId"
+    },
+    "current_checklist_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "feedback": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "thread_id",
+          "thread_state",
+          "base_thread_version",
+          "originating_decision_id",
+          "decision_revision",
+          "item_id",
+          "evaluated_item_revision_id",
+          "origin_checklist_revision",
+          "current_checklist_revision",
+          "evaluated_definition",
+          "comments",
+          "attachments",
+          "severity",
+          "has_agent_resolution"
+        ],
+        "properties": {
+          "thread_id": {
+            "$ref": "../common.schema.json#/$defs/threadId"
+          },
+          "thread_state": {
+            "$ref": "../enums/feedback-thread-state.schema.json"
+          },
+          "base_thread_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "originating_decision_id": {
+            "$ref": "../common.schema.json#/$defs/decisionId"
+          },
+          "decision_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "item_id": {
+            "$ref": "../common.schema.json#/$defs/itemId"
+          },
+          "evaluated_item_revision_id": {
+            "$ref": "../common.schema.json#/$defs/itemRevisionId"
+          },
+          "origin_checklist_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "current_checklist_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "evaluated_definition": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "action",
+              "expected_result",
+              "why_it_matters"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "maxLength": 300
+              },
+              "action": {
+                "type": "string",
+                "maxLength": 5000
+              },
+              "expected_result": {
+                "type": "string",
+                "maxLength": 5000
+              },
+              "why_it_matters": {
+                "type": "string",
+                "maxLength": 3000
+              }
+            }
+          },
+          "comments": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "author_type",
+                "body",
+                "authored_at"
+              ],
+              "properties": {
+                "author_type": {
+                  "type": "string",
+                  "enum": [
+                    "human",
+                    "agent",
+                    "system"
+                  ]
+                },
+                "body": {
+                  "type": "string",
+                  "maxLength": 10000
+                },
+                "authored_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "attachment_id",
+                "safe_display_name",
+                "mime_type",
+                "byte_size",
+                "scan_status",
+                "authorized_url"
+              ],
+              "properties": {
+                "attachment_id": {
+                  "type": "string",
+                  "pattern": "^attachment_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "safe_display_name": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "mime_type": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "byte_size": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "scan_status": {
+                  "type": "string",
+                  "enum": [
+                    "quarantined",
+                    "scanning",
+                    "clean",
+                    "rejected",
+                    "failed"
+                  ]
+                },
+                "authorized_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uri"
+                }
+              }
+            }
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "critical",
+              "high",
+              "normal",
+              "low",
+              null
+            ]
+          },
+          "has_agent_resolution": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "page": {
+      "$ref": "../common.schema.json#/$defs/page"
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}

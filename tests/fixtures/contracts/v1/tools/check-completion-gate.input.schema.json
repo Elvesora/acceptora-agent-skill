@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/check-completion-gate.input.schema.json",
+  "title": "check_completion_gate input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project_id",
+    "source_identity",
+    "adapter_kind",
+    "adapter_version",
+    "baseline_source_descriptor",
+    "baseline_source_digest",
+    "current_source_descriptor",
+    "current_source_digest",
+    "source_manifest",
+    "task_session_correlation_id",
+    "feature_id",
+    "versions"
+  ],
+  "properties": {
+    "project_id": {
+      "$ref": "../common.schema.json#/$defs/projectId"
+    },
+    "source_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "adapter_kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "adapter_version": {
+      "$ref": "../common.schema.json#/$defs/semanticVersion"
+    },
+    "baseline_source_descriptor": {
+      "$ref": "../common.schema.json#/$defs/sourceDescriptor"
+    },
+    "baseline_source_digest": {
+      "$ref": "../common.schema.json#/$defs/sourceDigest"
+    },
+    "current_source_descriptor": {
+      "$ref": "../common.schema.json#/$defs/sourceDescriptor"
+    },
+    "current_source_digest": {
+      "$ref": "../common.schema.json#/$defs/sourceDigest"
+    },
+    "source_manifest": {
+      "$ref": "../common.schema.json#/$defs/sourceManifest"
+    },
+    "task_session_correlation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "feature_id": {
+      "oneOf": [
+        {
+          "$ref": "../common.schema.json#/$defs/featureId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "versions": {
+      "$ref": "../common.schema.json#/$defs/versions"
+    }
+  }
+}

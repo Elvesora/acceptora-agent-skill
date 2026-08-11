@@ -1,0 +1,7 @@
+<!-- agent-verification:start -->
+After making eligible project changes, use the verify-generated-work skill before
+reporting completion. Resolve and preserve the existing Verification Feature ID.
+Synchronize a detailed manual-verification document through the configured Acceptora
+MCP server or its contract-equivalent REST API. Never mark human checks accepted. If synchronization fails, report it and
+write the configured recovery artifact.
+<!-- agent-verification:end -->

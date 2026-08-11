@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/enums/feature-state.schema.json",
+  "title": "Feature state",
+  "type": "string",
+  "enum": [
+    "drafting",
+    "ready_for_verification",
+    "verification_in_progress",
+    "changes_requested",
+    "blocked",
+    "ready_for_recheck",
+    "ready_for_acceptance",
+    "accepted",
+    "no_manual_verification_required",
+    "stale",
+    "sync_failed",
+    "archived"
+  ]
+}

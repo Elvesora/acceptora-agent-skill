@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/record-verification-exception.input.schema.json",
+  "title": "record_verification_exception input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "source_descriptor",
+    "source_digest",
+    "baseline_source_descriptor",
+    "source_manifest",
+    "reason_category",
+    "explanation",
+    "automated_evidence",
+    "versions",
+    "idempotency_key"
+  ],
+  "properties": {
+    "feature_id": {
+      "$ref": "../common.schema.json#/$defs/featureId"
+    },
+    "source_descriptor": {
+      "$ref": "../common.schema.json#/$defs/sourceDescriptor"
+    },
+    "source_digest": {
+      "$ref": "../common.schema.json#/$defs/sourceDigest"
+    },
+    "baseline_source_descriptor": {
+      "$ref": "../common.schema.json#/$defs/sourceDescriptor"
+    },
+    "source_manifest": {
+      "$ref": "../common.schema.json#/$defs/sourceManifest"
+    },
+    "reason_category": {
+      "$ref": "../enums/exception-reason.schema.json"
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 5000
+    },
+    "automated_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "$ref": "../common.schema.json#/$defs/automatedEvidence"
+      }
+    },
+    "versions": {
+      "$ref": "../common.schema.json#/$defs/versions"
+    },
+    "idempotency_key": {
+      "$ref": "../common.schema.json#/$defs/idempotencyKey"
+    }
+  }
+}

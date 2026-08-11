@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/fixture-envelope.schema.json",
+  "title": "Acceptora contract fixture envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_id",
+    "purpose",
+    "request_contract",
+    "request",
+    "expected_contract",
+    "expected"
+  ],
+  "properties": {
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]+$",
+      "maxLength": 200
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "request_contract": {
+      "type": "string",
+      "pattern": "^contracts/v1/.+\\.schema\\.json$"
+    },
+    "request": {
+      "type": "object"
+    },
+    "prior_state": {
+      "type": "object"
+    },
+    "expected_contract": {
+      "type": "string",
+      "pattern": "^contracts/v1/.+\\.schema\\.json$"
+    },
+    "expected": {
+      "type": "object"
+    },
+    "assertions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    },
+    "notes": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    }
+  }
+}

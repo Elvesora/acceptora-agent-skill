@@ -1,0 +1,809 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/common.schema.json",
+  "title": "Acceptora v1 shared contract definitions",
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "workspaceId": {
+      "type": "string",
+      "pattern": "^ws_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "featureId": {
+      "type": "string",
+      "pattern": "^feat_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "itemId": {
+      "type": "string",
+      "pattern": "^item_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "itemRevisionId": {
+      "type": "string",
+      "pattern": "^irev_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "sourceRevisionId": {
+      "type": "string",
+      "pattern": "^src_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "threadId": {
+      "type": "string",
+      "pattern": "^thread_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "decisionId": {
+      "type": "string",
+      "pattern": "^decision_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "resolutionId": {
+      "type": "string",
+      "pattern": "^resolution_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "exceptionId": {
+      "type": "string",
+      "pattern": "^exception_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "credentialId": {
+      "type": "string",
+      "pattern": "^cred_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "idempotencyKey": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "$ref": "#/$defs/ulid"
+        }
+      ]
+    },
+    "semanticKey": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 200,
+      "pattern": "^[a-z0-9][a-z0-9._:-]+$"
+    },
+    "coverageAnchor": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 500,
+      "pattern": "^(file|route|api|component|config|data|content|global):.+$"
+    },
+    "sourceDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "contractVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "semanticVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "integration_name",
+        "integration_version",
+        "skill_version",
+        "contract_version"
+      ],
+      "properties": {
+        "integration_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "integration_version": {
+          "$ref": "#/$defs/semanticVersion"
+        },
+        "skill_version": {
+          "$ref": "#/$defs/semanticVersion"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/contractVersion"
+        }
+      }
+    },
+    "sourceDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_locator",
+        "opaque_revision",
+        "adapter_kind",
+        "adapter_version"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "git",
+            "pull_request",
+            "content",
+            "file_manifest",
+            "opaque"
+          ]
+        },
+        "source_locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "opaque_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "base_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        },
+        "adapter_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "adapter_version": {
+          "$ref": "#/$defs/semanticVersion"
+        },
+        "metadata": {
+          "type": "object",
+          "maxProperties": 50,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "changedSurfaceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchor",
+        "change_kind",
+        "observed_by"
+      ],
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/coverageAnchor"
+        },
+        "change_kind": {
+          "type": "string",
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed"
+          ]
+        },
+        "observed_by": {
+          "type": "string",
+          "enum": [
+            "adapter",
+            "registered_derived",
+            "agent_enrichment"
+          ]
+        },
+        "previous_anchor": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/coverageAnchor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sourceDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "maxProperties": 20,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "integer",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "sourceManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "base_digest",
+        "current_digest",
+        "entries"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "base_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sourceDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current_digest": {
+          "$ref": "#/$defs/sourceDigest"
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": {
+            "$ref": "#/$defs/changedSurfaceEntry"
+          }
+        },
+        "ignored_entries": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": {
+            "$ref": "#/$defs/changedSurfaceEntry"
+          }
+        }
+      }
+    },
+    "automatedEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_key",
+        "kind",
+        "name",
+        "target",
+        "executed_at",
+        "outcome",
+        "summary",
+        "source_revision"
+      ],
+      "properties": {
+        "semantic_key": {
+          "$ref": "#/$defs/semanticKey"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "command",
+            "test",
+            "build",
+            "lint",
+            "browser",
+            "security",
+            "other"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "executed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "warning",
+            "not_run"
+          ]
+        },
+        "exit_status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "redacted_excerpt": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "source_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value",
+        "summary"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "path",
+            "commit",
+            "url",
+            "command",
+            "test",
+            "log",
+            "attachment",
+            "other"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    },
+    "knownLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_key",
+        "description",
+        "reason",
+        "affected_coverage_anchors",
+        "severity",
+        "blocks_acceptance",
+        "status",
+        "mitigation"
+      ],
+      "properties": {
+        "semantic_key": {
+          "$ref": "#/$defs/semanticKey"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "affected_coverage_anchors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/coverageAnchor"
+          }
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "normal",
+            "low"
+          ]
+        },
+        "blocks_acceptance": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "resolved",
+            "retired"
+          ]
+        },
+        "mitigation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "resolution_evidence": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/evidenceReference"
+          }
+        },
+        "policy_rule": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "policy_version": {
+          "type": "string",
+          "maxLength": 50
+        }
+      }
+    },
+    "checklistSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_key",
+        "title",
+        "description",
+        "display_order",
+        "collapsed_default",
+        "pattern_key"
+      ],
+      "properties": {
+        "semantic_key": {
+          "$ref": "#/$defs/semanticKey"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "collapsed_default": {
+          "type": "boolean"
+        },
+        "pattern_key": {
+          "$ref": "#/$defs/semanticKey"
+        }
+      }
+    },
+    "reconciliationItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "item_revision_id",
+        "semantic_key",
+        "section_semantic_key",
+        "display_order",
+        "operation",
+        "operation_reason",
+        "title",
+        "action",
+        "expected_result",
+        "why_it_matters",
+        "preconditions",
+        "coverage_anchors",
+        "source_references",
+        "risk",
+        "required",
+        "production_impact"
+      ],
+      "properties": {
+        "item_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/itemId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "item_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/itemRevisionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semantic_key": {
+          "$ref": "#/$defs/semanticKey"
+        },
+        "previous_semantic_key": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/semanticKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section_semantic_key": {
+          "$ref": "#/$defs/semanticKey"
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "operation": {
+          "$ref": "enums/reconciliation-operation.schema.json"
+        },
+        "operation_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "expected_result": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "why_it_matters": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3000
+        },
+        "preconditions": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "environment": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000
+        },
+        "test_data": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "coverage_anchors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/coverageAnchor"
+          }
+        },
+        "global_anchor_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000
+        },
+        "source_references": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "risk": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "normal",
+            "low"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "estimated_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "production_impact": {
+          "type": "boolean"
+        },
+        "side_effect_warning": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "invalidation_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "add"
+              }
+            },
+            "required": [
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "item_id": {
+                "type": "null"
+              },
+              "item_revision_id": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "item_id": {
+                "$ref": "#/$defs/itemId"
+              },
+              "item_revision_id": {
+                "$ref": "#/$defs/itemRevisionId"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage_anchors": {
+                "contains": {
+                  "type": "string",
+                  "pattern": "^global:"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "global_anchor_reason"
+            ],
+            "properties": {
+              "global_anchor_reason": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              }
+            }
+          }
+        }
+      ]
+    },
+    "exactAlias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alias_kind",
+        "provider",
+        "locator",
+        "value"
+      ],
+      "properties": {
+        "alias_kind": {
+          "type": "string",
+          "enum": [
+            "pull_request",
+            "issue",
+            "branch",
+            "task",
+            "content_object",
+            "external_key"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "is_default_or_shared_branch": {
+          "type": "boolean"
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_cursor",
+        "has_more"
+      ],
+      "properties": {
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 500
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

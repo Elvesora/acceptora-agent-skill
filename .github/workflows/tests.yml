@@ -1,0 +1,54 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - name: Check out package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Prepare owner-only Python runtime
+        uses: ./.github/actions/prepare-python
+
+      - name: Compile Python sources
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: '"$SAFE_PYTHON" -m compileall -q adapters scripts tests'
+
+      - name: Run package tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: '"$SAFE_PYTHON" -m unittest discover -s tests -p "test_*.py"'
+
+      - name: Check release archive
+        if: matrix.python == '3.14'
+        run: '"$SAFE_PYTHON" -B -I scripts/build_release.py --dist-dir "$RUNNER_TEMP/acceptora-agent-skill-dist" --source-commit "$GITHUB_SHA"'
+
+      - name: Check patch whitespace
+        run: git diff --check

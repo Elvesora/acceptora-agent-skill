@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Validate and publish release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+
+      - name: Prepare owner-only Python runtime
+        uses: ./.github/actions/prepare-python
+
+      - name: Require the tag to match package metadata
+        shell: bash
+        run: |
+          version="$("$SAFE_PYTHON" -I -c 'import json; print(json.load(open("config/package-manifest.json", encoding="utf-8"))["skill"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Run package tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: '"$SAFE_PYTHON" -m unittest discover -s tests -p "test_*.py"'
+
+      - name: Build immutable release artifacts
+        run: '"$SAFE_PYTHON" -B -I scripts/build_release.py --dist-dir "$RUNNER_TEMP/acceptora-agent-skill-dist" --source-commit "$GITHUB_SHA"'
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/acceptora-agent-skill-dist/verify-generated-work-$PACKAGE_VERSION.zip" \
+            "$RUNNER_TEMP/acceptora-agent-skill-dist/verify-generated-work-$PACKAGE_VERSION.tar.gz" \
+            "$RUNNER_TEMP/acceptora-agent-skill-dist/release-manifest.json" \
+            "$RUNNER_TEMP/acceptora-agent-skill-dist/SHA256SUMS" \
+            --verify-tag \
+            --title "verify-generated-work $PACKAGE_VERSION" \
+            --generate-notes

@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible defect in Acceptora Agent Skill.
+title: '[Bug]: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, personal data, customer data, private source material, production URLs, and sensitive payloads. Follow SECURITY.md for suspected vulnerabilities.
+  - type: input
+    id: package_version
+    attributes:
+      label: Package version
+      description: The exact version from config/package-manifest.json or the release manifest.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python, Git, operating-system, and agent-client versions.
+      placeholder: Python 3.14.7, Git 2.55.0, Windows 11, Codex CLI 0.147.0
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Affected operation
+      options:
+        - Installation plan or apply
+        - Status or rollback
+        - Skill discovery
+        - Hook lifecycle
+        - MCP connection or tool
+        - REST integration
+        - Health check
+        - Source manifest
+        - Offline recovery
+        - Release archive
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use a disposable repository and synthetic data. Include the exact safe commands and redacted output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only redacted error codes, correlation IDs, and safe diagnostics.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed credentials, tokens, private source material, personal data, customer data, and production payloads.
+          required: true
+        - label: This report does not disclose a suspected security vulnerability.
+          required: true

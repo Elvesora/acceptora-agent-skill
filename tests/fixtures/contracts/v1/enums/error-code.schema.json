@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/enums/error-code.schema.json",
+  "title": "Stable Acceptora error code",
+  "type": "string",
+  "enum": [
+    "AUTH_REQUIRED",
+    "REAUTHENTICATION_REQUIRED",
+    "SCOPE_DENIED",
+    "FEATURE_AMBIGUOUS",
+    "FEATURE_ARCHIVED",
+    "REVISION_CONFLICT",
+    "IDEMPOTENCY_CONFLICT",
+    "SOURCE_STALE",
+    "UNCOVERED_CHANGED_SURFACE",
+    "EXCEPTION_POLICY_DENIED",
+    "SECRET_REJECTED",
+    "PAYLOAD_TOO_LARGE",
+    "RATE_LIMITED",
+    "CONTRACT_UNSUPPORTED",
+    "SERVICE_UNAVAILABLE"
+  ]
+}

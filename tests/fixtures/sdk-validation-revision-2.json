@@ -1,0 +1,262 @@
+{
+  "fixture_id": "sdk-validation.revision-2.v1",
+  "purpose": "Reconcile a later SDK revision while preserving unrelated accepted decisions and reopening only an anchor-affected item.",
+  "request_contract": "contracts/v1/tools/reconcile-checklist.input.schema.json",
+  "request": {
+    "feature_id": "feat_01J00000000000000000000001",
+    "base_checklist_revision": 1,
+    "source_descriptor": {
+      "source_kind": "git",
+      "source_locator": "example/sdk-validation",
+      "opaque_revision": "fixture-revision-2",
+      "base_revision": "fixture-initial",
+      "adapter_kind": "git-working-tree",
+      "adapter_version": "1.0.0",
+      "metadata": {
+        "branch": "fixture/sdk-validation-contract"
+      }
+    },
+    "source_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "source_manifest": {
+      "schema_version": 1,
+      "base_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "current_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "entries": [
+        {
+          "anchor": "file:src/Responses/ValidationResult.php",
+          "change_kind": "modified",
+          "observed_by": "adapter"
+        },
+        {
+          "anchor": "file:tests/ValidationResultContractTest.php",
+          "change_kind": "added",
+          "observed_by": "adapter"
+        }
+      ],
+      "ignored_entries": []
+    },
+    "implementation_change_summary": "Hardens review-required result handling and adds an explicit regression contract test.",
+    "intent_summary": "Let SDK consumers distinguish allowed, denied, and review-required validation outcomes safely.",
+    "scope_summary": "ValidationResult behavior and its contract regression test; client signature and documentation are unchanged.",
+    "expected_outcome": "The affected limit-exceeded check requires recheck, unrelated accepted checks remain effective, and the new regression check starts pending.",
+    "preconditions": [
+      "Checklist revision 1 exists with the three initial fixture items.",
+      "The human accepted all three initial definitions."
+    ],
+    "automated_evidence": [
+      {
+        "semantic_key": "baseline.php.contract_tests.revision_2",
+        "kind": "test",
+        "name": "Synthetic PHP contract regression fixture",
+        "target": "tests/ValidationResultContractTest.php",
+        "executed_at": "2026-07-15T10:00:00Z",
+        "outcome": "passed",
+        "exit_status": 0,
+        "summary": "The synthetic fixture reports the new regression assertion as passing.",
+        "source_revision": "fixture-revision-2"
+      }
+    ],
+    "known_limits": [],
+    "sections": [
+      {
+        "semantic_key": "primary.sdk_contract",
+        "title": "Primary SDK contract",
+        "description": "Required checks for observable validation behavior.",
+        "display_order": 0,
+        "collapsed_default": false,
+        "pattern_key": "api-sdk"
+      },
+      {
+        "semantic_key": "documentation.sdk_contract",
+        "title": "Documentation accuracy",
+        "description": "Confirm the public examples match the runtime contract.",
+        "display_order": 1,
+        "collapsed_default": false,
+        "pattern_key": "content-docs"
+      }
+    ],
+    "items": [
+      {
+        "item_id": "item_01J00000000000000000000001",
+        "item_revision_id": "irev_01J00000000000000000000001",
+        "semantic_key": "sdk.php.validation.limit_exceeded_is_review",
+        "section_semantic_key": "primary.sdk_contract",
+        "display_order": 0,
+        "operation": "reopen",
+        "operation_reason": "The adapter observed a change to this item's ValidationResult.php coverage anchor.",
+        "title": "Confirm usage-limit exhaustion is review-required",
+        "action": "Open src/Responses/ValidationResult.php and inspect the synthetic limitExceeded() result.",
+        "expected_result": "decision is review, reason_code is LIMIT_EXCEEDED, isAllowed() is false, and needsReview() is true.",
+        "why_it_matters": "Quota exhaustion must never silently approve traffic.",
+        "preconditions": [
+          "Use the fixture source revision fixture-revision-2."
+        ],
+        "environment": "Local synthetic fixture",
+        "target": "src/Responses/ValidationResult.php",
+        "test_data": [
+          "Synthetic reason code LIMIT_EXCEEDED"
+        ],
+        "coverage_anchors": [
+          "file:src/Responses/ValidationResult.php"
+        ],
+        "source_references": [
+          "src/Responses/ValidationResult.php"
+        ],
+        "risk": "critical",
+        "required": true,
+        "estimated_seconds": 90,
+        "production_impact": false,
+        "side_effect_warning": null,
+        "invalidation_reason": "ValidationResult.php changed in fixture-revision-2."
+      },
+      {
+        "item_id": "item_01J00000000000000000000002",
+        "item_revision_id": "irev_01J00000000000000000000002",
+        "semantic_key": "sdk.php.validate.backward_compatible_signature",
+        "section_semantic_key": "primary.sdk_contract",
+        "display_order": 1,
+        "operation": "retain",
+        "operation_reason": "The definition and ValidationClient.php coverage anchor are unchanged.",
+        "title": "Confirm the validation client signature remains compatible",
+        "action": "Inspect validate() in src/ValidationClient.php and compare its required parameters with the documented compatibility fixture.",
+        "expected_result": "Existing required arguments remain unchanged and the method returns a ValidationResult instance.",
+        "why_it_matters": "A silent signature break would fail existing SDK consumers before they can evaluate a result.",
+        "preconditions": [],
+        "environment": "Local synthetic fixture",
+        "target": "src/ValidationClient.php",
+        "test_data": [],
+        "coverage_anchors": [
+          "file:src/ValidationClient.php"
+        ],
+        "source_references": [
+          "src/ValidationClient.php"
+        ],
+        "risk": "high",
+        "required": true,
+        "estimated_seconds": 60,
+        "production_impact": false,
+        "side_effect_warning": null,
+        "invalidation_reason": null
+      },
+      {
+        "item_id": "item_01J00000000000000000000003",
+        "item_revision_id": "irev_01J00000000000000000000003",
+        "semantic_key": "docs.sdk.validation_contract.matches_runtime",
+        "section_semantic_key": "documentation.sdk_contract",
+        "display_order": 0,
+        "operation": "retain",
+        "operation_reason": "The documentation definition and docs/validation.md coverage anchor are unchanged.",
+        "title": "Confirm validation documentation matches runtime values",
+        "action": "Open docs/validation.md and compare the allowed, denied, and review examples with ValidationResult.php.",
+        "expected_result": "Every documented decision and reason-code example exists in the runtime contract and no example contains a credential.",
+        "why_it_matters": "Consumers copy documentation examples directly, so drift creates integration errors and unsafe assumptions.",
+        "preconditions": [],
+        "environment": "Local synthetic fixture",
+        "target": "docs/validation.md",
+        "test_data": [],
+        "coverage_anchors": [
+          "file:docs/validation.md"
+        ],
+        "source_references": [
+          "docs/validation.md",
+          "src/Responses/ValidationResult.php"
+        ],
+        "risk": "normal",
+        "required": true,
+        "estimated_seconds": 90,
+        "production_impact": false,
+        "side_effect_warning": null,
+        "invalidation_reason": null
+      },
+      {
+        "item_id": null,
+        "item_revision_id": null,
+        "semantic_key": "sdk.php.validation.regression_contract_test_present",
+        "section_semantic_key": "primary.sdk_contract",
+        "display_order": 2,
+        "operation": "add",
+        "operation_reason": "The new regression contract test introduces a separately observable maintenance boundary.",
+        "title": "Confirm the limit-exceeded regression contract is explicit",
+        "action": "Open tests/ValidationResultContractTest.php and inspect the limit-exceeded assertions.",
+        "expected_result": "The test explicitly asserts review, LIMIT_EXCEEDED, isAllowed false, and needsReview true.",
+        "why_it_matters": "An explicit regression contract prevents future result-vocabulary drift from passing silently.",
+        "preconditions": [],
+        "environment": "Local synthetic fixture",
+        "target": "tests/ValidationResultContractTest.php",
+        "test_data": [],
+        "coverage_anchors": [
+          "file:tests/ValidationResultContractTest.php"
+        ],
+        "source_references": [
+          "tests/ValidationResultContractTest.php"
+        ],
+        "risk": "normal",
+        "required": true,
+        "estimated_seconds": 60,
+        "production_impact": false,
+        "side_effect_warning": null,
+        "invalidation_reason": null
+      }
+    ],
+    "addressed_resolution_ids": [],
+    "versions": {
+      "integration_name": "acceptora-fixture-client",
+      "integration_version": "1.0.0",
+      "skill_version": "1.0.0",
+      "contract_version": "1.0.0"
+    },
+    "idempotency_key": "00000000-0000-4000-8000-000000000002"
+  },
+  "prior_state": {
+    "checklist_revision": 1,
+    "decisions": [
+      {
+        "item_id": "item_01J00000000000000000000001",
+        "item_revision_id": "irev_01J00000000000000000000001",
+        "decision": "accepted"
+      },
+      {
+        "item_id": "item_01J00000000000000000000002",
+        "item_revision_id": "irev_01J00000000000000000000002",
+        "decision": "accepted"
+      },
+      {
+        "item_id": "item_01J00000000000000000000003",
+        "item_revision_id": "irev_01J00000000000000000000003",
+        "decision": "accepted"
+      }
+    ]
+  },
+  "expected_contract": "contracts/v1/tools/reconcile-checklist.output.schema.json",
+  "expected": {
+    "feature_id": "feat_01J00000000000000000000001",
+    "feature_url": "https://acceptora.example/features/feat_01J00000000000000000000001",
+    "source_revision_id": "src_01J00000000000000000000002",
+    "source_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "new_checklist_revision": 2,
+    "feature_status": "ready_for_recheck",
+    "counts": {
+      "added": 1,
+      "materially_updated": 0,
+      "editorially_updated": 0,
+      "reopened": 1,
+      "retained": 2,
+      "retired": 0
+    },
+    "items_requiring_recheck": [
+      "item_01J00000000000000000000001"
+    ],
+    "open_feedback_count": 0,
+    "warnings": [],
+    "known_limits": [],
+    "synchronized_at": "2026-07-15T10:01:00Z",
+    "idempotency_replayed": false,
+    "correlation_id": "corr-sdk-validation-revision-2"
+  },
+  "assertions": [
+    "The accepted item mapped to ValidationResult.php becomes ready_for_recheck.",
+    "The accepted client-signature and documentation items remain accepted.",
+    "The newly added contract-test item starts pending.",
+    "No human decision is fabricated or overwritten."
+  ]
+}

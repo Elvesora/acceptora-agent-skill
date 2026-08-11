@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "config_role": "non_authoritative_project_hints",
+  "project_id": "proj_REPLACE_WITH_PROJECT_ULID",
+  "feature_id": null,
+  "source_adapter": "git",
+  "ignored_paths": [
+    "vendor/**",
+    "node_modules/**",
+    "storage/logs/**",
+    "public/build/**"
+  ],
+  "offline_outbox": ".verification/outbox",
+  "processed_outbox": ".verification/outbox/processed"
+}

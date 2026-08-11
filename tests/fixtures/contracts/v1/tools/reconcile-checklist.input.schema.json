@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/tools/reconcile-checklist.input.schema.json",
+  "title": "reconcile_checklist input v1",
+  "$ref": "../reconciliation-request.schema.json"
+}

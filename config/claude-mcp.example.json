@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "acceptora": {
+      "type": "http",
+      "url": "https://verify.example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ACCEPTORA_AGENT_TOKEN}"
+      }
+    }
+  }
+}

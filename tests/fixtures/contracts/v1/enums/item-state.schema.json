@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.acceptora.com/contracts/v1/enums/item-state.schema.json",
+  "title": "Derived verification item state",
+  "type": "string",
+  "enum": [
+    "pending",
+    "accepted",
+    "declined",
+    "blocked",
+    "skipped",
+    "ready_for_recheck",
+    "retired"
+  ]
+}
