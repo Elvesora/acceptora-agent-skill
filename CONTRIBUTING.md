@@ -16,13 +16,14 @@ python -m compileall -q adapters scripts tests
 git diff --check
 ```
 
-The unit suite validates skill metadata, customer documentation links, client templates, installer behavior, source capture, security boundaries, contract fixtures, offline recovery, health checks, and deterministic archives.
+The unit suite validates skill metadata, customer documentation links, client templates, installer behavior, production-`main` source capture, the deterministic ZIP bundle and embedded provenance, security boundaries, contract fixtures, offline recovery, and health checks.
 
 ## Change expectations
 
 - Keep `SKILL.md` focused, imperative, and under 500 lines. Its YAML frontmatter may contain only `name` and `description`.
 - Put detailed agent guidance in directly linked `references/` files and deterministic operations in tested `scripts/` files.
 - Keep repository documentation and community files outside the installed skill payload.
+- Keep the canonical repository's `main` branch as the production source and sole update authority. The downloadable ZIP must remain a deterministic snapshot of a clean `main` commit, never an independently authored or version-selected source.
 - Preserve Python 3.11 compatibility unless a major release changes the supported platform.
 - Preserve the strict Git, filesystem, executable, origin, credential, plan, receipt, rollback, and external-runtime boundaries.
 - Never log or persist bearer tokens, repository contents, private source material, response bodies, credentials, cookies, personal data, or customer data.

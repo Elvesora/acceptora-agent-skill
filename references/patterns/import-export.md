@@ -13,4 +13,4 @@ Apply to file ingestion, bulk imports, generated exports, downloads, or data por
 - Verify private storage, expiry, safe filenames/content disposition, and cleanup.
 - Check formulas/active content/path traversal or archive expansion risks when applicable.
 
-Use import/export route, parser, job, storage, and data anchors. Warn before bulk mutation and specify reset steps.
+Use `route:` or `api:` for import/export entry points, `file:` for parsers and workers, `config:` for storage behavior, and `data:` for resulting state. Warn before bulk mutation and specify reset steps.

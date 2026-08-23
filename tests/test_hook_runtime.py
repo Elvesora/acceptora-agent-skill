@@ -239,33 +239,94 @@ class CompletionGatePayloadTest(unittest.TestCase):
             self.assertNotEqual(first["current"]["source_digest"], second["current"]["source_digest"])
             self.assertNotEqual(first["changed_surface_digest"], second["changed_surface_digest"])
 
-    def test_strict_git_binds_tracked_ignored_paths_but_omits_ignored_untracked_files(self) -> None:
+    def test_strict_git_captures_polyglot_sources_and_nonignored_framework_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            tracked_paths = (
-                "public/build/app.js",
-                "dist/bundle.js",
-                "vendor/package/source.php",
-                "node_modules/package/index.js",
+            tracked_sources = (
+                "python/main.py",
+                "typescript/app.ts",
+                "go/main.go",
+                "rust/lib.rs",
+                "dotnet/Program.cs",
+                "java/Main.java",
+                "ruby/task.rb",
+                "assets/module.wasm",
+                "Makefile",
             )
-            for relative in tracked_paths:
+            for relative in tracked_sources:
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(f"baseline:{relative}\n", encoding="utf-8")
+                path.write_bytes(b"\x00baseline:" + relative.encode("utf-8") + b"\n")
             initialize_git(root)
             run_git(root, "add", ".")
             run_git(root, "commit", "-m", "baseline")
             baseline = SOURCE_MANIFEST.capture_snapshot(root, "git")
-            self.assertTrue(set(tracked_paths) <= {entry["path"] for entry in baseline["entries"]})
+            self.assertTrue(set(tracked_sources) <= {entry["path"] for entry in baseline["entries"]})
 
-            for relative in tracked_paths:
-                (root / relative).write_text(f"changed:{relative}\n", encoding="utf-8")
-            ignored_untracked = root / "build" / "untracked.js"
-            ignored_untracked.parent.mkdir(parents=True, exist_ok=True)
-            ignored_untracked.write_text("ignored\n", encoding="utf-8")
+            for relative in tracked_sources:
+                (root / relative).write_bytes(b"\x00changed:" + relative.encode("utf-8") + b"\n")
+            newly_created_sources = (
+                "build/generated.custom",
+                "dist/bundle.custom",
+                "vendor/local/source.custom",
+                "node_modules/local/source.custom",
+                "storage/framework/custom/source.custom",
+                "bootstrap/cache/source.custom",
+                "public/build/source.custom",
+            )
+            for relative in newly_created_sources:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"source:{relative}\n", encoding="utf-8")
+
             comparison = SOURCE_MANIFEST.compare_with_baseline(baseline, root)
-            self.assertEqual(set(tracked_paths), {entry["path"] for entry in comparison["entries"]})
-            self.assertNotIn("build/untracked.js", {entry["path"] for entry in comparison["entries"]})
+            self.assertEqual(
+                set(tracked_sources) | set(newly_created_sources),
+                {entry["path"] for entry in comparison["entries"]},
+            )
+
+    def test_strict_git_uses_repository_and_explicit_ignores_instead_of_stack_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gitignore = root / ".gitignore"
+            gitignore.write_text(".gradle/\n.dart_tool/\n.venv/\nDerivedData/\nPods/\ntarget/\n", encoding="utf-8")
+            initialize_git(root)
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "baseline")
+            baseline = SOURCE_MANIFEST.capture_snapshot(root, "git")
+
+            git_ignored = (
+                ".gradle/cache/state",
+                ".dart_tool/cache/state",
+                ".venv/lib/module.py",
+                "DerivedData/output/app",
+                "Pods/Library/source.m",
+                "target/debug/app",
+            )
+            for relative in git_ignored:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("ignored by repository\n", encoding="utf-8")
+
+            with patch.object(SOURCE_MANIFEST.os, "scandir", side_effect=AssertionError("Git ignored tree scanned")):
+                comparison = SOURCE_MANIFEST.compare_with_baseline(baseline, root)
+            self.assertEqual([], comparison["entries"])
+
+            explicit_paths = ("build/generated.js", "cache/generated.bin")
+            for relative in explicit_paths:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("explicitly ignored\n", encoding="utf-8")
+
+            included = SOURCE_MANIFEST.compare_with_baseline(baseline, root)
+            excluded = SOURCE_MANIFEST.compare_with_baseline(
+                baseline,
+                root,
+                extra_ignores=("build/**", "cache/**"),
+            )
+            self.assertEqual(set(explicit_paths), {entry["path"] for entry in included["entries"]})
+            self.assertEqual([], excluded["entries"])
+            self.assertEqual((".git/**", ".verification/**"), SOURCE_MANIFEST.DEFAULT_IGNORES)
 
     def test_staged_rename_and_copy_have_distinct_content_bound_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -541,10 +602,17 @@ class CompletionGatePayloadTest(unittest.TestCase):
 
     def test_runtime_versions_are_loaded_from_the_package_manifest(self) -> None:
         manifest = json.loads((PACKAGE_ROOT / "config" / "package-manifest.json").read_text(encoding="utf-8"))
+        client_registry = json.loads(
+            (PACKAGE_ROOT / "config" / "client-profiles.json").read_text(encoding="utf-8")
+        )
 
         self.assertEqual(manifest["skill"]["version"], HOOK_RUNTIME.SKILL_VERSION)
         self.assertEqual(manifest["integration"]["version"], HOOK_RUNTIME.INTEGRATION_VERSION)
         self.assertEqual(manifest["contract"]["version"], HOOK_RUNTIME.CONTRACT_VERSION)
+        self.assertEqual(
+            [profile["id"] for profile in client_registry["clients"]],
+            list(HOOK_RUNTIME.CLIENT_PROFILES),
+        )
 
     def test_maps_deterministic_manifest_to_exact_v1_gate_shape(self) -> None:
         base_digest = "a" * 64

@@ -1,4 +1,4 @@
 interface:
   display_name: "Verify Generated Work"
-  short_description: "Create durable human acceptance checklists"
+  short_description: "Verify changes in any software stack"
   default_prompt: "Use $verify-generated-work after implementing or changing a deliverable to synchronize its manual verification checklist."

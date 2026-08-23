@@ -14,4 +14,4 @@ Apply whenever a change affects trust boundaries, credentials, sensitive data, r
 - Verify audit records and correlation without sensitive payloads.
 - Record unperformed destructive or production security checks as structured blocking limits when appropriate.
 
-Use auth, policy, renderer, storage, credential, tenant, and global trust-contract anchors. Automated security checks do not create human acceptance.
+Use `route:` or `api:` for request boundaries, `file:` for renderers or enforcement code, `config:` for policies and storage, `data:` for credential or tenant state, and `global:` for trust contracts spanning several surfaces. Automated security checks do not create human acceptance.

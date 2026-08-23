@@ -13,4 +13,4 @@ Apply to corrective changes, including regressions and edge-case fixes.
 - Record the regression test actually run and distinguish it from human verification.
 - Include cleanup for any reproduction fixture.
 
-Anchor both the root-cause surface and the user-observable surface. Do not reduce the checklist to “confirm bug is fixed.”
+Anchor both the root-cause surface and the user-observable surface with the narrowest applicable `file:`, `route:`, `api:`, `component:`, `config:`, `data:`, `content:`, or `global:` prefix. Do not reduce the checklist to “confirm bug is fixed.”

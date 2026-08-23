@@ -51,6 +51,7 @@
         "target": "tests/ValidationResultContractTest.php",
         "executed_at": "2026-07-15T10:00:00Z",
         "outcome": "passed",
+        "evidence_sufficiency": "sufficient",
         "exit_status": 0,
         "summary": "The synthetic fixture reports the new regression assertion as passing.",
         "source_revision": "fixture-revision-2"
@@ -202,7 +203,7 @@
     "versions": {
       "integration_name": "acceptora-fixture-client",
       "integration_version": "1.0.0",
-      "skill_version": "1.0.0",
+      "skill_version": "1.1.0",
       "contract_version": "1.0.0"
     },
     "idempotency_key": "00000000-0000-4000-8000-000000000002"

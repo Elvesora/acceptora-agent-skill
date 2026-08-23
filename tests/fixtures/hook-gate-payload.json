@@ -52,7 +52,7 @@
   "versions": {
     "integration_name": "codex",
     "integration_version": "1.0.0",
-    "skill_version": "1.0.0",
+    "skill_version": "1.1.0",
     "contract_version": "1.0.0"
   }
 }

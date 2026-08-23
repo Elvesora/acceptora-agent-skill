@@ -29,8 +29,8 @@ def main() -> int:
         update_notice = check_for_skill_update(event)
     except Exception:
         update_notice = (
-            "Agent Verification update check warning: the release check failed safely; "
-            "no update was downloaded and no setup files were changed."
+            "Agent Verification update check warning: the Git check failed safely; "
+            "no skill source was fetched and no setup files were changed."
         )
     if update_notice:
         messages.append(update_notice)

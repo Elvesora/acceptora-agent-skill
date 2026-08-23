@@ -13,4 +13,4 @@ Apply to sign-in, sessions, tokens, roles, policies, ownership, tenant boundarie
 - Test project/workspace isolation across reads, writes, search, files, queues, and exports touched by the change.
 - Confirm audit attribution without recording credentials.
 
-Use route/API, policy, session-contract, workspace/project, and credential anchors. Treat any unverified cross-tenant boundary as blocking unless project policy says otherwise.
+Use `route:` or `api:` for request surfaces, `config:` for policy configuration, `data:` for ownership and tenant boundaries, and `global:` for session or credential contracts spanning several surfaces. Treat any unverified cross-tenant boundary as blocking unless project policy says otherwise.

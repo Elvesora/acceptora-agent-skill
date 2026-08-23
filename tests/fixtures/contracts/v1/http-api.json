@@ -10,6 +10,21 @@
     "authentication": "bearer",
     "required_scope": "projects:read"
   },
+  "connection_confirmation": {
+    "name": "confirm_connection",
+    "method": "POST",
+    "path": "/api/v1/integrations/connection/confirm",
+    "authentication": "bearer",
+    "required_scopes": [
+      "projects:read",
+      "features:resolve",
+      "features:read",
+      "checklists:write",
+      "feedback:read",
+      "feedback:address",
+      "gates:read"
+    ]
+  },
   "operations": [
     {
       "name": "resolve_feature",

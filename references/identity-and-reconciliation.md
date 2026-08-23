@@ -36,14 +36,14 @@ Give a bounded human-readable reason for material updates, reopening, and retire
 Attach at least one deterministic anchor to every active item. Prefer observed or registered anchors:
 
 ```text
-file:resources/js/Pages/Billing/Index.vue
-route:GET:/account/billing
-api:POST:/api/v1/subscriptions/cancel
-component:SubscriptionCancelDialog
-config:billing.grace_period_days
-data:subscriptions.status
-content:notion:<object-id>
-global:auth-session-contract
+file:<repository-relative-path>
+route:<method-or-action>:<route-or-screen-identifier>
+api:<method-or-operation>:<endpoint-or-contract-identifier>
+component:<public-component-or-view-identifier>
+config:<configuration-key-or-manifest-identifier>
+data:<schema-collection-field-or-record-identifier>
+content:<provider-or-document-identifier>
+global:<cross-surface-contract-identifier>
 ```
 
 Use `global:*` only when a narrower surface cannot represent the dependency, and explain why.

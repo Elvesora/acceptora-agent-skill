@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -27,8 +28,9 @@ MANAGED_START = "<!-- agent-verification:start -->"
 MANAGED_END = "<!-- agent-verification:end -->"
 PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-CLIENTS = ("codex", "claude-code", "gemini-cli")
 PLATFORMS = ("auto", "windows", "posix")
+CLIENT_REGISTRY_PATH = "config/client-profiles.json"
+CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 EPHEMERAL_PARTS = {".git", ".github", ".pytest_cache", ".verification", "__pycache__", "dist", "tests"}
 EPHEMERAL_SUFFIXES = {".pyc", ".pyo", ".deferred"}
 RELEASE_IDENTITY_EXCLUDED_FILES = {
@@ -60,6 +62,11 @@ RUNTIME_NAMESPACE = "acceptora/verify-generated-work/runtimes"
 RUNTIME_RECEIPT = "install-receipt.json"
 RUNTIME_PACKAGE_DIRECTORY = "package"
 MAX_SOURCE_FILE_SIZE = 8 * 1024 * 1024
+CANONICAL_SKILL_REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
+PRODUCTION_SKILL_BRANCH = "main"
+EMBEDDED_PROVENANCE_FILENAME = "acceptora-agent-skill-provenance.json"
+GIT_COMMIT_PATTERN = re.compile(r"^[a-f0-9]{40,64}$")
+SHA256_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 _UNSPECIFIED = object()
 MINIMUM_PYTHON = (3, 11)
 _WINDOWS_CURRENT_SID: str | None = None
@@ -215,18 +222,27 @@ def _windows_acl_infos(paths: list[Path]) -> dict[str, dict[str, Any]]:
         for key, value in os.environ.items()
         if key.upper() not in {"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
     }
-    try:
-        process = subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=environment,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise InstallError("The external path ACLs could not be inspected.") from error
+    command = [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script]
+    process: subprocess.CompletedProcess[str] | None = None
+    timeout_error: subprocess.TimeoutExpired | None = None
+    for _attempt in range(2):
+        try:
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+                timeout=15,
+                check=False,
+            )
+            break
+        except subprocess.TimeoutExpired as error:
+            timeout_error = error
+        except OSError as error:
+            raise InstallError("The external path ACLs could not be inspected.") from error
+    if process is None:
+        raise InstallError("The external path ACLs could not be inspected.") from timeout_error
     if process.returncode != 0:
         raise InstallError("The external path ACLs could not be inspected.")
     try:
@@ -666,6 +682,225 @@ def _resolved_git_executable(root: Path, override: str | None) -> Path:
     return _validated_executable(candidate, "Git executable", root)
 
 
+def _isolated_git_environment() -> dict[str, str]:
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def _package_git_value(git_executable: Path, *arguments: str) -> str:
+    try:
+        process = subprocess.run(
+            [
+                str(git_executable),
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(PACKAGE_ROOT),
+                *arguments,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+            env=_isolated_git_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError("The skill package Git identity could not be inspected.") from error
+    if process.returncode != 0 or process.stderr.strip():
+        raise InstallError("The skill package Git identity could not be inspected.")
+    try:
+        value = process.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as error:
+        raise InstallError("The skill package Git identity is not valid UTF-8.") from error
+    if not value or "\n" in value or "\r" in value:
+        raise InstallError("The skill package Git identity is invalid.")
+    return value
+
+
+def _package_git_worktree_root(git_executable: Path) -> Path | None:
+    try:
+        process = subprocess.run(
+            [
+                str(git_executable),
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(PACKAGE_ROOT),
+                "rev-parse",
+                "--show-toplevel",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+            env=_isolated_git_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError("The skill package Git identity could not be inspected.") from error
+    if process.returncode != 0:
+        if (PACKAGE_ROOT / ".git").exists() or _is_linklike(PACKAGE_ROOT / ".git"):
+            raise InstallError("The skill package Git identity could not be inspected.")
+        return None
+    if process.stderr.strip():
+        raise InstallError("The skill package Git identity could not be inspected.")
+    try:
+        value = process.stdout.decode("utf-8", errors="strict").strip()
+        root = Path(value).resolve(strict=True)
+    except (UnicodeDecodeError, OSError, ValueError) as error:
+        raise InstallError("The skill package Git identity is invalid.") from error
+    if not value or "\n" in value or "\r" in value or not root.is_dir():
+        raise InstallError("The skill package Git identity is invalid.")
+    return root
+
+
+def _embedded_package_source_identity(args: argparse.Namespace) -> dict[str, str]:
+    if PACKAGE_ROOT.name != "verify-generated-work":
+        raise InstallError("The extracted skill package directory has an unexpected name.")
+    provenance_path = PACKAGE_ROOT.parent / EMBEDDED_PROVENANCE_FILENAME
+    if not provenance_path.exists() and not _is_linklike(provenance_path):
+        raise InstallError("The extracted skill package is missing its embedded provenance record.")
+    if _is_linklike(provenance_path) or not provenance_path.is_file():
+        raise InstallError("The embedded skill provenance record is not a regular file.")
+    if provenance_path.stat().st_size > 16 * 1024:
+        raise InstallError("The embedded skill provenance record is unexpectedly large.")
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("The embedded skill provenance record is malformed.") from error
+    expected_keys = {
+        "branch",
+        "commit_sha",
+        "repository_url",
+        "schema_version",
+        "source_tree_sha256",
+    }
+    if not isinstance(provenance, dict) or set(provenance) != expected_keys or provenance.get("schema_version") != 1:
+        raise InstallError("The embedded skill provenance record is malformed.")
+    repository_url = provenance.get("repository_url")
+    branch = provenance.get("branch")
+    commit_sha = provenance.get("commit_sha")
+    source_tree_sha256 = provenance.get("source_tree_sha256")
+    if repository_url != CANONICAL_SKILL_REPOSITORY_URL:
+        raise InstallError("The embedded skill provenance does not name the canonical Acceptora repository.")
+    if branch != PRODUCTION_SKILL_BRANCH:
+        raise InstallError("The embedded skill provenance does not name the production main branch.")
+    if not isinstance(commit_sha, str) or GIT_COMMIT_PATTERN.fullmatch(commit_sha) is None:
+        raise InstallError("The embedded skill provenance commit is invalid.")
+    if not isinstance(source_tree_sha256, str) or SHA256_PATTERN.fullmatch(source_tree_sha256) is None:
+        raise InstallError("The embedded skill provenance tree digest is invalid.")
+    observed_tree_sha256 = _package_source_tree_sha256(_iter_release_identity_files())
+    if observed_tree_sha256 != source_tree_sha256:
+        raise InstallError("The extracted skill package does not match its embedded source-tree digest.")
+    requested_commit = getattr(args, "installed_commit_sha", None)
+    if requested_commit is not None and requested_commit != commit_sha:
+        raise InstallError("The skill package commit changed after the installation plan was created.")
+    return {
+        "repository_url": repository_url,
+        "branch": branch,
+        "commit_sha": commit_sha,
+    }
+
+
+def _assert_clean_package_checkout(git_executable: Path) -> None:
+    try:
+        process = subprocess.run(
+            [
+                str(git_executable),
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(PACKAGE_ROOT),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                ".",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+            env=_isolated_git_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError("The skill package Git state could not be inspected.") from error
+    if process.returncode != 0 or process.stderr.strip():
+        raise InstallError("The skill package Git state could not be inspected.")
+    if process.stdout.strip():
+        raise InstallError("The skill package must be a clean checkout of the production main branch.")
+
+
+def _normalized_repository_url(value: str) -> str:
+    normalized = value.rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized
+
+
+def _package_source_identity(
+    args: argparse.Namespace,
+    git_executable: Path,
+    *,
+    historical: bool,
+) -> dict[str, str]:
+    if historical:
+        repository_url = getattr(args, "skill_repository_url", None)
+        branch = getattr(args, "skill_repository_branch", None)
+        commit_sha = getattr(args, "installed_commit_sha", None)
+    else:
+        package_root = _package_git_worktree_root(git_executable)
+        if package_root is None:
+            return _embedded_package_source_identity(args)
+        if os.path.normcase(str(package_root)) != os.path.normcase(str(PACKAGE_ROOT)):
+            if (PACKAGE_ROOT / ".git").exists() or _is_linklike(PACKAGE_ROOT / ".git"):
+                raise InstallError("The skill package must be run from its canonical Git worktree root.")
+            return _embedded_package_source_identity(args)
+        observed_repository_url = _package_git_value(git_executable, "remote", "get-url", "origin")
+        if _normalized_repository_url(observed_repository_url) != CANONICAL_SKILL_REPOSITORY_URL:
+            raise InstallError("The skill package origin is not the canonical Acceptora repository.")
+        repository_url = CANONICAL_SKILL_REPOSITORY_URL
+        branch = _package_git_value(git_executable, "symbolic-ref", "--quiet", "--short", "HEAD")
+        if branch != PRODUCTION_SKILL_BRANCH:
+            raise InstallError("The skill package must be checked out on the production main branch.")
+        commit_sha = _package_git_value(git_executable, "rev-parse", "--verify", "HEAD^{commit}").lower()
+        branch_commit_sha = _package_git_value(
+            git_executable,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{PRODUCTION_SKILL_BRANCH}^{{commit}}",
+        ).lower()
+        if branch_commit_sha != commit_sha:
+            raise InstallError("The skill package HEAD does not match the production main branch.")
+        _assert_clean_package_checkout(git_executable)
+        requested_commit = getattr(args, "installed_commit_sha", None)
+        if requested_commit is not None and requested_commit != commit_sha:
+            raise InstallError("The skill package commit changed after the installation plan was created.")
+
+    if repository_url != CANONICAL_SKILL_REPOSITORY_URL or branch != PRODUCTION_SKILL_BRANCH:
+        raise InstallError("The skill package source is not the canonical production branch.")
+    if not isinstance(commit_sha, str) or GIT_COMMIT_PATTERN.fullmatch(commit_sha) is None:
+        raise InstallError("The skill package commit is invalid.")
+    return {
+        "repository_url": repository_url,
+        "branch": branch,
+        "commit_sha": commit_sha,
+    }
+
+
 def _assert_actual_git_worktree_root(root: Path, git_executable: Path) -> None:
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     environment.update(
@@ -816,6 +1051,143 @@ def _package_manifest() -> dict[str, Any]:
     return value
 
 
+def _client_registry() -> dict[str, Any]:
+    try:
+        value = json.loads(_read_text(CLIENT_REGISTRY_PATH))
+    except json.JSONDecodeError as exc:
+        raise InstallError("The client provider registry is invalid JSON.") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise InstallError("The client provider registry has an unsupported schema.")
+    reviewed_on = value.get("capabilities_reviewed_on")
+    try:
+        if not isinstance(reviewed_on, str) or date.fromisoformat(reviewed_on).isoformat() != reviewed_on:
+            raise ValueError
+    except ValueError as exc:
+        raise InstallError("The client provider registry has an invalid capability review date.") from exc
+    clients = value.get("clients")
+    if not isinstance(clients, list) or not clients:
+        raise InstallError("The client provider registry does not contain client profiles.")
+
+    identifiers: set[str] = set()
+    for profile in clients:
+        if not isinstance(profile, dict):
+            raise InstallError("The client provider registry contains an invalid profile.")
+        client = profile.get("id")
+        if not isinstance(client, str) or CLIENT_ID_PATTERN.fullmatch(client) is None or client in identifiers:
+            raise InstallError("The client provider registry contains an invalid or duplicate client ID.")
+        identifiers.add(client)
+        if not isinstance(profile.get("display_name"), str) or not profile["display_name"].strip():
+            raise InstallError(f"The client profile has no display name: {client}")
+        if not isinstance(profile.get("reference_build"), str) or not profile["reference_build"].strip():
+            raise InstallError(f"The client profile has no reference build: {client}")
+        minimum_build = profile.get("minimum_build")
+        if minimum_build is not None and (not isinstance(minimum_build, str) or not minimum_build.strip()):
+            raise InstallError(f"The client profile has an invalid minimum build: {client}")
+
+        project = profile.get("project_layout")
+        if not isinstance(project, dict):
+            raise InstallError(f"The client profile has no project layout: {client}")
+        for field in ("skill_directory", "instruction_file", "instruction_source"):
+            relative = project.get(field)
+            if not isinstance(relative, str):
+                raise InstallError(f"The client project layout is missing {field}: {client}")
+            _validate_relative(relative)
+        _read_source(project["instruction_source"])
+
+        user_config = profile.get("user_config")
+        if not isinstance(user_config, dict):
+            raise InstallError(f"The client profile has no user configuration layout: {client}")
+        default_directory = user_config.get("default_directory")
+        if not isinstance(default_directory, str):
+            raise InstallError(f"The client profile has no default configuration directory: {client}")
+        _validate_relative(default_directory)
+        for field in ("settings", "mcp"):
+            target = user_config.get(field)
+            if not isinstance(target, dict) or target.get("base") not in {"client_config", "client_config_parent"}:
+                raise InstallError(f"The client profile has an invalid {field} configuration target: {client}")
+            relative = target.get("path")
+            if not isinstance(relative, str):
+                raise InstallError(f"The client profile has no {field} configuration path: {client}")
+            _validate_relative(relative)
+
+        templates = profile.get("templates")
+        hooks = templates.get("hooks") if isinstance(templates, dict) else None
+        mcp = templates.get("mcp") if isinstance(templates, dict) else None
+        if not isinstance(hooks, dict) or not isinstance(hooks.get("default"), str):
+            raise InstallError(f"The client profile has no default hook template: {client}")
+        hook_templates = [hooks["default"]]
+        platform_overrides = hooks.get("platform_overrides", {})
+        if not isinstance(platform_overrides, dict) or any(
+            platform not in {"windows", "posix"} or not isinstance(relative, str)
+            for platform, relative in platform_overrides.items()
+        ):
+            raise InstallError(f"The client profile has invalid hook template overrides: {client}")
+        hook_templates.extend(platform_overrides.values())
+        for relative in hook_templates:
+            _validate_relative(relative)
+            _read_source(relative)
+        if (
+            not isinstance(mcp, dict)
+            or not isinstance(mcp.get("path"), str)
+            or mcp.get("renderer") not in {"codex_toml", "claude_json", "gemini_json"}
+        ):
+            raise InstallError(f"The client profile has an invalid MCP template: {client}")
+        _validate_relative(mcp["path"])
+        _read_source(mcp["path"])
+
+        runtime_adapters = profile.get("runtime_adapters")
+        if not isinstance(runtime_adapters, list) or not runtime_adapters or any(
+            not isinstance(relative, str) for relative in runtime_adapters
+        ):
+            raise InstallError(f"The client profile has invalid runtime adapters: {client}")
+        for relative in runtime_adapters:
+            _validate_relative(relative)
+            _read_source(relative)
+
+        lifecycle = profile.get("lifecycle")
+        if not isinstance(lifecycle, dict):
+            raise InstallError(f"The client profile has no lifecycle: {client}")
+        baseline_events = lifecycle.get("baseline_events")
+        if not isinstance(baseline_events, list) or not baseline_events or any(
+            not isinstance(event, str) or not event for event in baseline_events
+        ):
+            raise InstallError(f"The client profile has invalid baseline events: {client}")
+        for field in ("completion_event", "update_check_event"):
+            if not isinstance(lifecycle.get(field), str) or not lifecycle[field]:
+                raise InstallError(f"The client profile has no {field}: {client}")
+
+        discovery_checks = profile.get("discovery_checks")
+        if not isinstance(discovery_checks, list) or not discovery_checks or any(
+            not isinstance(check, str) or not check for check in discovery_checks
+        ):
+            raise InstallError(f"The client profile has invalid discovery checks: {client}")
+
+        official_docs = profile.get("official_docs")
+        if not isinstance(official_docs, dict) or set(official_docs) != {"skills", "hooks", "mcp", "configuration"}:
+            raise InstallError(f"The client profile has incomplete official documentation links: {client}")
+        if any(
+            not isinstance(url, str) or urlsplit(url).scheme != "https" or not urlsplit(url).netloc
+            for url in official_docs.values()
+        ):
+            raise InstallError(f"The client profile has an invalid official documentation URL: {client}")
+    return value
+
+
+def _client_profiles() -> dict[str, dict[str, Any]]:
+    return {profile["id"]: profile for profile in _client_registry()["clients"]}
+
+
+def _client_names() -> tuple[str, ...]:
+    return tuple(_client_profiles())
+
+
+def _client_profile(client: str) -> dict[str, Any]:
+    try:
+        return _client_profiles()[client]
+    except KeyError as exc:
+        raise InstallError(f"Unsupported client: {client}") from exc
+
+
 def _source_mode(relative: str) -> int:
     return 0o755 if relative.endswith(".py") else 0o644
 
@@ -891,37 +1263,20 @@ def _package_source_tree_sha256(files: list[dict[str, Any]]) -> str:
 
 
 def _client_layout(client: str) -> dict[str, str]:
-    layouts = {
-        "codex": {
-            "skill": ".agents/skills/verify-generated-work",
-            "instruction": "AGENTS.md",
-            "instruction_source": "snippets/AGENTS.md.block",
-        },
-        "claude-code": {
-            "skill": ".claude/skills/verify-generated-work",
-            "instruction": "CLAUDE.md",
-            "instruction_source": "snippets/CLAUDE.md.block",
-        },
-        "gemini-cli": {
-            "skill": ".gemini/skills/verify-generated-work",
-            "instruction": "GEMINI.md",
-            "instruction_source": "snippets/GEMINI.md.block",
-        },
+    project = _client_profile(client)["project_layout"]
+    return {
+        "skill": project["skill_directory"],
+        "instruction": project["instruction_file"],
+        "instruction_source": project["instruction_source"],
     }
-    try:
-        return layouts[client]
-    except KeyError as exc:
-        raise InstallError(f"Unsupported client: {client}") from exc
 
 
 def _client_user_layout(root: Path, client: str, override: str | None) -> dict[str, Path]:
-    defaults = {
-        "codex": Path.home() / ".codex",
-        "claude-code": Path.home() / ".claude",
-        "gemini-cli": Path.home() / ".gemini",
-    }
+    profile = _client_profile(client)
+    user_config = profile["user_config"]
+    default_parts = _validate_relative(user_config["default_directory"]).parts
     config_directory = _validate_external_path(
-        Path(override) if override else defaults[client],
+        Path(override) if override else Path.home().joinpath(*default_parts),
         "Client configuration directory",
     )
     _assert_safe_user_path_ancestor_chain(config_directory, "Client configuration directory")
@@ -932,15 +1287,12 @@ def _client_user_layout(root: Path, client: str, override: str | None) -> dict[s
         pass
     else:
         raise InstallError("The client configuration directory must be outside the enclosing repository worktree.")
-    if client == "codex":
-        settings = config_directory / "hooks.json"
-        mcp = config_directory / "config.toml"
-    elif client == "claude-code":
-        settings = config_directory / "settings.json"
-        mcp = config_directory.parent / ".claude.json"
-    else:
-        settings = config_directory / "settings.json"
-        mcp = settings
+    def resolve_target(target: dict[str, str]) -> Path:
+        base = config_directory if target["base"] == "client_config" else config_directory.parent
+        return base.joinpath(*_validate_relative(target["path"]).parts)
+
+    settings = resolve_target(user_config["settings"])
+    mcp = resolve_target(user_config["mcp"])
     for path in {settings, mcp}:
         if _is_linklike(path) or (path.exists() and not path.is_file()):
             raise InstallError(f"Client configuration target is not a regular file: {path}")
@@ -994,22 +1346,10 @@ def _render_hooks(
         "{{PYTHON_COMMAND}}": python_command,
         "{{RUNTIME_ROOT}}": runtime_path,
     }
-    if client == "codex":
-        relative = "adapters/codex/hooks.json.example"
-        template = _load_json_source(relative)
-        replacements = common_replacements
-    elif client == "claude-code":
-        relative = (
-            "adapters/claude/settings.windows.json.example"
-            if platform == "windows"
-            else "adapters/claude/settings.json.example"
-        )
-        template = _load_json_source(relative)
-        replacements = common_replacements
-    else:
-        relative = "adapters/gemini/hooks.json.example"
-        template = _load_json_source(relative)
-        replacements = common_replacements
+    hooks = _client_profile(client)["templates"]["hooks"]
+    relative = hooks.get("platform_overrides", {}).get(platform, hooks["default"])
+    template = _load_json_source(relative)
+    replacements = common_replacements
     rendered = _replace_json_strings(template, replacements)
     managed_hook_marker = f"acceptora-target:{runtime_root.name}"
 
@@ -1138,8 +1478,8 @@ def _pending_path(root: Path) -> Path:
     return _PINNED_STATE_ROOT / "pending-sync.json"
 
 
-def _release_update_cache_path(root: Path) -> Path:
-    return _PINNED_STATE_ROOT / RELEASE_UPDATE_CACHE_FILENAME
+def _skill_update_cache_path(root: Path) -> Path:
+    return _PINNED_STATE_ROOT / SKILL_UPDATE_CACHE_FILENAME
 
 
 def _cleanup_pending_state(root: Path, pending_path: Path) -> None:
@@ -1268,11 +1608,7 @@ def _source_file(source: str, destination: str | None = None) -> dict[str, Any]:
 
 
 def _runtime_files(client: str, config: dict[str, Any], git_executable: Path) -> list[dict[str, Any]]:
-    adapter_files = {
-        "codex": ("adapters/codex/task_start.py", "adapters/codex/stop.py"),
-        "claude-code": ("adapters/claude/task_start.py", "adapters/claude/stop.py"),
-        "gemini-cli": ("adapters/gemini/task_start.py", "adapters/gemini/after_agent.py"),
-    }[client]
+    adapter_files = tuple(_client_profile(client)["runtime_adapters"])
     files_by_destination = {
         f"{RUNTIME_PACKAGE_DIRECTORY}/{entry['source']}": {
             **entry,
@@ -1286,6 +1622,7 @@ def _runtime_files(client: str, config: dict[str, Any], git_executable: Path) ->
         _source_file("scripts/validate_checklist_payload.py"),
         _source_file("scripts/validate_gate_response.py"),
         _source_file("config/package-manifest.json"),
+        _source_file(CLIENT_REGISTRY_PATH),
         _generated_file("config/runtime-config.json", _json_text(config)),
         *(
             _source_file(path, f"trusted_adapters/{path.removeprefix('adapters/')}")
@@ -1313,29 +1650,32 @@ def _render_mcp_config(
     mcp_url: str,
     server_alias: str,
 ) -> tuple[str, str | dict[str, Any]]:
-    if client == "codex":
-        relative = "config/codex-mcp.example.toml"
+    mcp_profile = _client_profile(client)["templates"]["mcp"]
+    relative = mcp_profile["path"]
+    renderer = mcp_profile["renderer"]
+    if renderer == "codex_toml":
         rendered = _read_text(relative)
         rendered = rendered.replace('"https://verify.example.test/mcp"', json.dumps(mcp_url, ensure_ascii=False))
         rendered = rendered.replace("ACCEPTORA_AGENT_TOKEN", token_env)
         rendered = rendered.replace("[mcp_servers.acceptora]", f'[mcp_servers."{server_alias}"]')
         return relative, rendered.rstrip() + "\n"
 
-    relative = "config/claude-mcp.example.json" if client == "claude-code" else "config/gemini-mcp.example.json"
     config = _load_json_source(relative)
     servers = config.get("mcpServers")
     if not isinstance(servers, dict) or not isinstance(servers.get("acceptora"), dict):
         raise InstallError(f"The MCP template is missing mcpServers.acceptora: {relative}")
     server = servers["acceptora"]
-    if client == "gemini-cli":
+    if renderer == "gemini_json":
         server.pop("type", None)
         server.pop("url", None)
         server["httpUrl"] = mcp_url
         server["trust"] = False
-    else:
+    elif renderer == "claude_json":
         server.pop("httpUrl", None)
         server.pop("trust", None)
         server["url"] = mcp_url
+    else:
+        raise InstallError(f"Unsupported MCP renderer: {renderer}")
     headers = server.setdefault("headers", {})
     if not isinstance(headers, dict):
         raise InstallError(f"The MCP template has invalid headers: {relative}")
@@ -1345,6 +1685,11 @@ def _render_mcp_config(
 
 def _contains_managed_reference(value: Any) -> bool:
     text = json.dumps(value, ensure_ascii=False, sort_keys=True).lower()
+    adapter_markers = tuple(
+        f"/{relative.lower()}"
+        for profile in _client_profiles().values()
+        for relative in profile["runtime_adapters"]
+    )
     return any(
         marker in text
         for marker in (
@@ -1352,12 +1697,7 @@ def _contains_managed_reference(value: Any) -> bool:
             "verify-generated-work",
             "capturing verification baseline",
             "manual-verification synchronization",
-            "/adapters/codex/task_start.py",
-            "/adapters/codex/stop.py",
-            "/adapters/claude/task_start.py",
-            "/adapters/claude/stop.py",
-            "/adapters/gemini/task_start.py",
-            "/adapters/gemini/after_agent.py",
+            *adapter_markers,
         )
     )
 
@@ -1970,8 +2310,6 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
     completion_gate_url = _endpoint(base, "/api/v1/integrations/completion-gate")
     rest_base_url = _endpoint(base, "/api/v1/integrations")
     openapi_url = _endpoint(base, "/api/v1/integrations/openapi.json")
-    release_manifest_url = _endpoint(base, "/agent-skill/release-manifest.json")
-    release_bundle_url = _endpoint(base, "/agent-skill/verify-generated-work.zip")
     layout = _client_layout(args.client)
     user_layout = _client_user_layout(root, args.client, getattr(args, "client_config_dir", None))
     runtime_root = _runtime_root(root, args.client, getattr(args, "runtime_base", None))
@@ -1983,6 +2321,7 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
         git_executable = _resolved_git_executable(root, getattr(args, "git_executable", None))
         _assert_actual_git_worktree_root(root, git_executable)
         _assert_strict_source_capture(root, git_executable)
+    source_identity = _package_source_identity(args, git_executable, historical=historical)
     server_alias = f"acceptora-{_runtime_identity(root, args.client)[:12]}"
     trusted_installer = runtime_root / RUNTIME_PACKAGE_DIRECTORY / "scripts" / "install.py"
     installed_source_tree_sha256 = _package_source_tree_sha256(_iter_release_identity_files())
@@ -2010,9 +2349,10 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
             "completion_gate_url": completion_gate_url,
             "rest_base_url": rest_base_url,
             "openapi_url": openapi_url,
-            "release_manifest_url": release_manifest_url,
-            "release_bundle_url": release_bundle_url,
-            "release_update_timeout_seconds": 3,
+            "skill_repository_url": source_identity["repository_url"],
+            "skill_repository_branch": source_identity["branch"],
+            "installed_commit_sha": source_identity["commit_sha"],
+            "skill_update_timeout_seconds": 3,
             "installed_source_tree_sha256": installed_source_tree_sha256,
             "tls_ca_file": None,
             "timeout_seconds": 8,
@@ -2116,12 +2456,16 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
             "project_id": args.project_id,
             "api_base_url": api_base_url,
             "token_env": PINNED_TOKEN_ENV,
+            "skill_repository_url": source_identity["repository_url"],
+            "skill_repository_branch": source_identity["branch"],
+            "installed_commit_sha": source_identity["commit_sha"],
         },
         "package": {
             "name": manifest["skill"].get("name"),
             "version": manifest["skill"].get("version"),
             "manifest_sha256": _sha256_bytes(_read_source("config/package-manifest.json")),
             "source_tree_sha256": installed_source_tree_sha256,
+            "source": source_identity,
         },
         "sources": {"hooks": hook_source, "mcp": mcp_source},
         "operations": operations,
@@ -2373,10 +2717,13 @@ def _verify_plan(plan: dict[str, Any], accepted: str) -> Path:
         "client",
         "client_config_dir",
         "git_executable",
+        "installed_commit_sha",
         "platform",
         "project_id",
         "python_executable",
         "runtime_base",
+        "skill_repository_branch",
+        "skill_repository_url",
         "target_root",
         "token_env",
     }
@@ -2635,6 +2982,7 @@ def _apply_plan(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
         "target_root": _normal_path(root),
         "runtime_root": plan["runtime_root"],
         "runtime_base": plan["inputs"]["runtime_base"],
+        "installed_commit_sha": plan["package"]["source"]["commit_sha"],
         "plan_sha256": plan["plan_sha256"],
         "receipt": plan["receipt"],
         "trusted_installer": plan["trusted_installer"],
@@ -3086,7 +3434,7 @@ def _runtime_state_files(runtime_root: Path) -> list[dict[str, str]]:
     if _is_linklike(state_root) or not state_root.is_dir():
         raise InstallError("The external runtime state path is not a regular directory.")
     allowed_name = re.compile(
-        r"(?:[A-Za-z0-9_-]{1,120}\.(?:baseline|loop)\.json|pending-sync\.json|release-update\.json)"
+        r"(?:[A-Za-z0-9_-]{1,120}\.(?:baseline|loop)\.json|pending-sync\.json|skill-update\.json)"
     )
     files: list[dict[str, str]] = []
     for path in sorted(state_root.rglob("*")):
@@ -3199,7 +3547,7 @@ def _verify_rollback_plan(plan: dict[str, Any], accepted: str) -> tuple[Path, Pa
     inputs = plan.get("inputs")
     if not isinstance(inputs, dict) or set(inputs) != {"client", "target_root", "runtime_base"}:
         raise InstallError("The rollback plan is missing its canonical inputs.")
-    if inputs.get("client") not in CLIENTS or not all(isinstance(value, str) for value in inputs.values()):
+    if inputs.get("client") not in _client_names() or not all(isinstance(value, str) for value in inputs.values()):
         raise InstallError("The rollback plan canonical inputs are invalid.")
     root = _validated_root(inputs["target_root"])
     reconstructed = _build_rollback_plan(root, inputs["client"], inputs["runtime_base"])
@@ -3330,7 +3678,7 @@ def _text_result(value: dict[str, Any]) -> str:
 
 def _preview_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Render a deterministic, non-mutating manual installation preview.")
-    parser.add_argument("--client", choices=CLIENTS, required=True)
+    parser.add_argument("--client", choices=_client_names(), required=True)
     parser.add_argument("--target-root", required=True, help="Repository that would receive the installation.")
     parser.add_argument("--platform", choices=PLATFORMS, default="auto")
     parser.add_argument("--project-id", default="proj_REPLACE_WITH_PROJECT_ULID")
@@ -3359,7 +3707,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan = subparsers.add_parser("plan", help="Render a complete non-mutating installation plan")
-    plan.add_argument("--client", choices=CLIENTS, required=True)
+    plan.add_argument("--client", choices=_client_names(), required=True)
     plan.add_argument("--target-root", required=True)
     plan.add_argument("--platform", choices=PLATFORMS, default="auto")
     plan.add_argument("--project-id", default="proj_REPLACE_WITH_PROJECT_ULID")
@@ -3376,12 +3724,12 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--accept-plan-sha256", required=True)
     apply.add_argument("--format", choices=("text", "json"), default="json")
     status_parser = subparsers.add_parser("status", help="Inspect a receipt without changing files")
-    status_parser.add_argument("--client", choices=CLIENTS, required=True)
+    status_parser.add_argument("--client", choices=_client_names(), required=True)
     status_parser.add_argument("--target-root", required=True)
     status_parser.add_argument("--runtime-base")
     status_parser.add_argument("--format", choices=("text", "json"), default="json")
     rollback_plan = subparsers.add_parser("rollback-plan", help="Render a non-mutating canonical rollback plan")
-    rollback_plan.add_argument("--client", choices=CLIENTS, required=True)
+    rollback_plan.add_argument("--client", choices=_client_names(), required=True)
     rollback_plan.add_argument("--target-root", required=True)
     rollback_plan.add_argument("--runtime-base")
     rollback_plan.add_argument("--format", choices=("text", "json"), default="json")

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Build deterministic local release archives, a manifest, and SHA-256 sums."""
+"""Build deterministic public bundles from the canonical production source.
+
+Publishable bundles must come from a clean ``main`` checkout of the canonical
+Acceptora Agent Skill repository. The Git repository remains the source and
+update authority; the ZIP is a directly extractable installation convenience.
+"""
 
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import os
@@ -13,10 +17,9 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import zipfile
-from io import BytesIO
+from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -30,6 +33,10 @@ from validate_checklist_payload import find_secret_paths  # noqa: E402
 
 
 ARCHIVE_PREFIX = "verify-generated-work"
+CANONICAL_REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
+PRODUCTION_BRANCH = "main"
+EMBEDDED_PROVENANCE_FILENAME = "acceptora-agent-skill-provenance.json"
+CLIENT_REGISTRY_PATH = "config/client-profiles.json"
 EXCLUDED_PARTS = {".git", ".github", ".pytest_cache", "__pycache__", "dist", "tests", ".verification"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".deferred"}
 EXCLUDED_FILES = {
@@ -56,7 +63,6 @@ CONFIG_ASSIGNMENT = re.compile(
     r"^\s*[\"']?(?P<key>[A-Za-z][A-Za-z0-9_-]*)[\"']?\s*[:=]\s*(?P<value>.*?)\s*,?\s*$"
 )
 MAX_FILE_SIZE = 8 * 1024 * 1024
-SOURCE_DATE_EPOCH = 0
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -265,6 +271,8 @@ def _collect_files(source_root: Path, dist_directory: Path) -> list[dict[str, An
         raise ReleaseError("Release source is missing SKILL.md.")
     if not any(entry["path"] == "config/package-manifest.json" for entry in files):
         raise ReleaseError("Release source is missing config/package-manifest.json.")
+    if not any(entry["path"] == CLIENT_REGISTRY_PATH for entry in files):
+        raise ReleaseError(f"Release source is missing {CLIENT_REGISTRY_PATH}.")
     return files
 
 
@@ -284,6 +292,129 @@ def _load_package_manifest(files: list[dict[str, Any]]) -> dict[str, Any]:
     version = skill.get("version")
     if not _is_semantic_version(version):
         raise ReleaseError("The package manifest has an invalid semantic version.")
+    distribution = value.get("distribution")
+    if not isinstance(distribution, dict):
+        raise ReleaseError("The package manifest is missing its distribution identity.")
+    if distribution.get("repository_url") != CANONICAL_REPOSITORY_URL:
+        raise ReleaseError("The package manifest does not name the canonical repository.")
+    if distribution.get("branch") != PRODUCTION_BRANCH:
+        raise ReleaseError("The package manifest does not name the production main branch.")
+    return value
+
+
+def _load_client_registry(files: list[dict[str, Any]]) -> dict[str, Any]:
+    entries = {entry["path"]: entry for entry in files}
+    entry = entries.get(CLIENT_REGISTRY_PATH)
+    if entry is None:
+        raise ReleaseError("Release source is missing a regular client provider registry.")
+    try:
+        value = json.loads(entry["body"].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseError("The client provider registry is not valid UTF-8 JSON.") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise ReleaseError("The client provider registry has an unsupported schema.")
+    reviewed_on = value.get("capabilities_reviewed_on")
+    try:
+        if not isinstance(reviewed_on, str) or date.fromisoformat(reviewed_on).isoformat() != reviewed_on:
+            raise ValueError
+    except ValueError as exc:
+        raise ReleaseError("The client provider registry has an invalid capability review date.") from exc
+    profiles = value.get("clients")
+    if not isinstance(profiles, list) or not profiles:
+        raise ReleaseError("The client provider registry does not contain client profiles.")
+
+    identifiers: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise ReleaseError("The client provider registry contains an invalid profile.")
+        client = profile.get("id")
+        if (
+            not isinstance(client, str)
+            or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", client) is None
+            or client in identifiers
+        ):
+            raise ReleaseError("The client provider registry contains an invalid or duplicate client ID.")
+        identifiers.add(client)
+        if not isinstance(profile.get("reference_build"), str) or not profile["reference_build"].strip():
+            raise ReleaseError(f"The client profile has no reference build: {client}")
+        minimum_build = profile.get("minimum_build")
+        if minimum_build is not None and (not isinstance(minimum_build, str) or not minimum_build.strip()):
+            raise ReleaseError(f"The client profile has an invalid minimum build: {client}")
+
+        project = profile.get("project_layout")
+        user_config = profile.get("user_config")
+        templates = profile.get("templates")
+        lifecycle = profile.get("lifecycle")
+        official_docs = profile.get("official_docs")
+        runtime_adapters = profile.get("runtime_adapters")
+        if not all(isinstance(item, dict) for item in (project, user_config, templates, lifecycle, official_docs)):
+            raise ReleaseError(f"The client profile is incomplete: {client}")
+        if not isinstance(runtime_adapters, list) or not runtime_adapters:
+            raise ReleaseError(f"The client profile has invalid runtime adapters: {client}")
+
+        referenced_sources: list[str] = []
+        for field in ("skill_directory", "instruction_file", "instruction_source"):
+            relative = project.get(field)
+            if not isinstance(relative, str):
+                raise ReleaseError(f"The client project layout is missing {field}: {client}")
+            _validate_relative(relative)
+        referenced_sources.append(project["instruction_source"])
+        default_directory = user_config.get("default_directory")
+        if not isinstance(default_directory, str):
+            raise ReleaseError(f"The client profile has no default configuration directory: {client}")
+        _validate_relative(default_directory)
+        for field in ("settings", "mcp"):
+            target = user_config.get(field)
+            if not isinstance(target, dict) or target.get("base") not in {"client_config", "client_config_parent"}:
+                raise ReleaseError(f"The client profile has an invalid {field} configuration target: {client}")
+            relative = target.get("path")
+            if not isinstance(relative, str):
+                raise ReleaseError(f"The client profile has no {field} configuration path: {client}")
+            _validate_relative(relative)
+
+        hooks = templates.get("hooks")
+        mcp = templates.get("mcp")
+        if not isinstance(hooks, dict) or not isinstance(hooks.get("default"), str):
+            raise ReleaseError(f"The client profile has no default hook template: {client}")
+        referenced_sources.append(hooks["default"])
+        overrides = hooks.get("platform_overrides", {})
+        if not isinstance(overrides, dict) or any(
+            platform not in {"windows", "posix"} or not isinstance(relative, str)
+            for platform, relative in overrides.items()
+        ):
+            raise ReleaseError(f"The client profile has invalid hook template overrides: {client}")
+        referenced_sources.extend(overrides.values())
+        if (
+            not isinstance(mcp, dict)
+            or not isinstance(mcp.get("path"), str)
+            or mcp.get("renderer") not in {"codex_toml", "claude_json", "gemini_json"}
+        ):
+            raise ReleaseError(f"The client profile has an invalid MCP template: {client}")
+        referenced_sources.append(mcp["path"])
+        if any(not isinstance(relative, str) for relative in runtime_adapters):
+            raise ReleaseError(f"The client profile has invalid runtime adapters: {client}")
+        referenced_sources.extend(runtime_adapters)
+        for relative in referenced_sources:
+            _validate_relative(relative)
+            if relative not in entries:
+                raise ReleaseError(f"The client profile references a missing release file: {relative}")
+
+        baseline_events = lifecycle.get("baseline_events")
+        if not isinstance(baseline_events, list) or not baseline_events or any(
+            not isinstance(event, str) or not event for event in baseline_events
+        ):
+            raise ReleaseError(f"The client profile has invalid baseline events: {client}")
+        if any(not isinstance(lifecycle.get(field), str) or not lifecycle[field] for field in ("completion_event", "update_check_event")):
+            raise ReleaseError(f"The client profile has an invalid lifecycle: {client}")
+        discovery_checks = profile.get("discovery_checks")
+        if not isinstance(discovery_checks, list) or not discovery_checks or any(
+            not isinstance(check, str) or not check for check in discovery_checks
+        ):
+            raise ReleaseError(f"The client profile has invalid discovery checks: {client}")
+        if set(official_docs) != {"skills", "hooks", "mcp", "configuration"} or any(
+            not isinstance(url, str) or not url.startswith("https://") for url in official_docs.values()
+        ):
+            raise ReleaseError(f"The client profile has invalid official documentation links: {client}")
     return value
 
 
@@ -340,6 +471,52 @@ def _run_git(executable: Path, source_root: Path, *arguments: str) -> subprocess
         timeout=15,
         env=environment,
     )
+
+
+def _git_text(executable: Path, repository_root: Path, *arguments: str) -> str:
+    result = _run_git(executable, repository_root, *arguments)
+    if result.returncode != 0 or result.stderr.strip():
+        raise ReleaseError("The canonical release source identity could not be verified.")
+    try:
+        value = result.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as error:
+        raise ReleaseError("The canonical release source identity is not valid UTF-8.") from error
+    if not value or "\n" in value or "\r" in value:
+        raise ReleaseError("The canonical release source identity is invalid.")
+    return value
+
+
+def _normalized_repository_url(value: str) -> str:
+    normalized = value.rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized
+
+
+def _canonical_source_identity(
+    git_executable: Path,
+    repository_root: Path,
+    head: str,
+) -> dict[str, str]:
+    observed_url = _git_text(git_executable, repository_root, "remote", "get-url", "origin")
+    if _normalized_repository_url(observed_url) != CANONICAL_REPOSITORY_URL:
+        raise ReleaseError("A publishable bundle must use the canonical HTTPS origin.")
+    branch = _git_text(git_executable, repository_root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if branch != PRODUCTION_BRANCH:
+        raise ReleaseError("A publishable bundle must be built from the production main branch.")
+    branch_commit = _git_text(
+        git_executable,
+        repository_root,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{PRODUCTION_BRANCH}^{{commit}}",
+    ).lower()
+    if branch_commit != head:
+        raise ReleaseError("The release checkout HEAD does not match its production main branch.")
+    return {
+        "source_repository_url": CANONICAL_REPOSITORY_URL,
+        "source_branch": PRODUCTION_BRANCH,
+    }
 
 
 def _source_provenance(
@@ -424,7 +601,11 @@ def _source_provenance(
     if override and not head.startswith(override.lower()):
         raise ReleaseError("The requested source commit does not match the clean checkout HEAD.")
 
-    return {"source_commit": head, "source_state": "clean"}
+    return {
+        "source_commit": head,
+        "source_state": "clean",
+        **_canonical_source_identity(git_executable, repository_root, head),
+    }
 
 
 def _collect_git_files(source_root: Path, git_executable: Path, commit: str) -> list[dict[str, Any]]:
@@ -498,6 +679,8 @@ def _collect_git_files(source_root: Path, git_executable: Path, commit: str) -> 
         raise ReleaseError("Release source is missing SKILL.md.")
     if not any(entry["path"] == "config/package-manifest.json" for entry in files):
         raise ReleaseError("Release source is missing config/package-manifest.json.")
+    if not any(entry["path"] == CLIENT_REGISTRY_PATH for entry in files):
+        raise ReleaseError(f"Release source is missing {CLIENT_REGISTRY_PATH}.")
     return files
 
 
@@ -540,7 +723,7 @@ def _write_bytes_atomic(path: Path, body: bytes) -> None:
 def _write_zip(path: Path, files: list[dict[str, Any]]) -> None:
     def writer(temporary: Path) -> None:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for entry in files:
+            for entry in sorted(files, key=lambda item: item["archive_path"]):
                 info = zipfile.ZipInfo(entry["archive_path"], date_time=(1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
@@ -551,28 +734,33 @@ def _write_zip(path: Path, files: list[dict[str, Any]]) -> None:
     _atomic_output(path, writer)
 
 
-def _write_tar_gz(path: Path, files: list[dict[str, Any]]) -> None:
-    def writer(temporary: Path) -> None:
-        with temporary.open("wb") as raw:
-            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=SOURCE_DATE_EPOCH) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
-                    for entry in files:
-                        info = tarfile.TarInfo(entry["archive_path"])
-                        info.size = entry["size"]
-                        info.mode = int(entry["mode"], 8)
-                        info.uid = 0
-                        info.gid = 0
-                        info.uname = ""
-                        info.gname = ""
-                        info.mtime = SOURCE_DATE_EPOCH
-                        info.type = tarfile.REGTYPE
-                        archive.addfile(info, BytesIO(entry["body"]))
-
-    _atomic_output(path, writer)
-
-
 def _public_file_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: entry[key] for key in ("path", "archive_path", "size", "mode", "sha256")}
+
+
+def _embedded_provenance(
+    provenance: dict[str, str],
+    source_tree_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if provenance["source_state"] != "clean":
+        return None
+    record = {
+        "schema_version": 1,
+        "repository_url": provenance["source_repository_url"],
+        "branch": provenance["source_branch"],
+        "commit_sha": provenance["source_commit"],
+        "source_tree_sha256": source_tree_sha256,
+    }
+    body = _json_bytes(record)
+    entry = {
+        "path": EMBEDDED_PROVENANCE_FILENAME,
+        "archive_path": EMBEDDED_PROVENANCE_FILENAME,
+        "size": len(body),
+        "mode": "0644",
+        "sha256": _sha256_bytes(body),
+        "body": body,
+    }
+    return record, entry
 
 
 def build_release(
@@ -587,11 +775,16 @@ def build_release(
     provenance = _source_provenance(source_root, git_executable, commit_override, allow_dirty)
     files = _release_files(source_root, dist_directory, git_executable, provenance)
     package = _load_package_manifest(files)
+    client_registry = _load_client_registry(files)
+    client_profiles = client_registry["clients"]
     version = package["skill"]["version"]
     zip_name = f"{ARCHIVE_PREFIX}-{version}.zip"
-    tar_name = f"{ARCHIVE_PREFIX}-{version}.tar.gz"
     public_files = [_public_file_entry(entry) for entry in files]
     source_tree_sha256 = _sha256_bytes(_canonical_json_bytes(public_files))
+    embedded_provenance = _embedded_provenance(provenance, source_tree_sha256)
+    zip_files = [*files]
+    if embedded_provenance is not None:
+        zip_files.append(embedded_provenance[1])
     dist_directory.parent.mkdir(parents=True, exist_ok=True)
     staging_directory = Path(
         tempfile.mkdtemp(prefix=f".{dist_directory.name}.", suffix=".tmp", dir=dist_directory.parent)
@@ -599,9 +792,7 @@ def build_release(
 
     try:
         zip_path = staging_directory / zip_name
-        tar_path = staging_directory / tar_name
-        _write_zip(zip_path, files)
-        _write_tar_gz(tar_path, files)
+        _write_zip(zip_path, zip_files)
         manifest: dict[str, Any] = {
             "schema_version": 1,
             "name": package["skill"]["name"],
@@ -609,11 +800,20 @@ def build_release(
             "integration_version": package.get("integration", {}).get("version"),
             "contract_version": package.get("contract", {}).get("version"),
             "mcp_protocol_version": package.get("contract", {}).get("mcp_protocol_version"),
+            "distribution": package["distribution"],
             **provenance,
             "source_tree_sha256": source_tree_sha256,
-            "supported_clients": ["codex", "claude-code", "gemini-cli"],
-            "reference_client_builds": package.get("reference_client_builds", {}),
-            "minimum_client_builds": package.get("minimum_client_builds", {}),
+            "client_capabilities_reviewed_on": client_registry["capabilities_reviewed_on"],
+            "supported_clients": [profile["id"] for profile in client_profiles],
+            "reference_client_builds": {
+                profile["id"]: profile["reference_build"]
+                for profile in client_profiles
+            },
+            "minimum_client_builds": {
+                profile["id"]: profile["minimum_build"]
+                for profile in client_profiles
+                if profile.get("minimum_build") is not None
+            },
             "archive_prefix": ARCHIVE_PREFIX,
             "files": public_files,
             "artifacts": [
@@ -623,14 +823,13 @@ def build_release(
                     "size": zip_path.stat().st_size,
                     "sha256": _sha256_file(zip_path),
                 },
-                {
-                    "filename": tar_name,
-                    "format": "tar.gz",
-                    "size": tar_path.stat().st_size,
-                    "sha256": _sha256_file(tar_path),
-                },
             ],
         }
+        if embedded_provenance is not None:
+            manifest["embedded_provenance"] = {
+                "filename": EMBEDDED_PROVENANCE_FILENAME,
+                "sha256": embedded_provenance[1]["sha256"],
+            }
         manifest_path = staging_directory / "release-manifest.json"
         manifest_body = _json_bytes(manifest)
         _write_bytes_atomic(manifest_path, manifest_body)
@@ -678,13 +877,20 @@ def build_release(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dist-dir", required=True, help="Caller-selected directory for local release outputs")
+    parser.add_argument(
+        "--dist-dir",
+        required=True,
+        help="Caller-selected directory for public release outputs",
+    )
     parser.add_argument("--source-root", default=str(PACKAGE_ROOT), help=argparse.SUPPRESS)
     parser.add_argument("--source-commit")
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
-        help="Allow a local uncommitted source snapshot and mark it UNVERSIONED; never use for publication",
+        help=(
+            "Allow a local uncommitted source snapshot and mark it UNVERSIONED; "
+            "the resulting candidate has no installable provenance and must never be published"
+        ),
     )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     return parser

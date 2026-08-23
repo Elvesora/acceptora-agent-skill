@@ -4,6 +4,33 @@ All notable changes to Acceptora Agent Skill are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-23
+
+### Added
+
+- A central machine-readable provider registry for Codex, Claude Code, and Gemini CLI, consumed by installation, trusted runtime, and release metadata.
+- A dated client capability matrix separating provider-documented support from Acceptora-generated defaults and reviewed build baselines.
+- Optional `evidence_sufficiency` and `blocker_reason` fields that keep proof quality and a `not_run` cause separate from execution outcome and human acceptance.
+- Explicit final setup confirmation through `health_check.py --confirm-connection`, requiring all seven normal workflow scopes and performed only after every REST, project, MCP, tool, annotation, and schema check passes.
+- A deterministic installable ZIP convenience bundle with embedded canonical-repository, `main` branch, source-commit, and complete source-tree provenance.
+
+### Fixed
+
+- Retry one transient Windows ACL-inspection timeout while continuing to reject repeated timeouts and actual ACL command failures.
+- Keep required pull-request CI jobs runnable by limiting the publishable production ZIP build to `main` while preserving its clean-commit provenance checks.
+- Align the Gemini CLI capability baseline with stable `0.56.0`, where the documented `/mcp reload` discovery command is supported.
+- Validate all published checklist request bounds, nested types, enums, RFC 3339 timestamps, automated-evidence conditionals, source manifests, and ignored entries before sending a checklist.
+- Run the remote `main` update query from an isolated repository-free directory so a target repository's local `url.*.insteadOf` configuration cannot redirect it.
+- Remove Laravel-, Composer-, and Node-oriented default source ignores that could omit legitimate untracked files in repositories using another stack.
+
+### Changed
+
+- Derive client choices, paths, templates, adapters, lifecycle update events, and published client metadata from the provider registry instead of duplicated code and package-manifest fields.
+- Use the canonical GitHub repository's `main` branch as the production source and update authority while retaining an application-hosted ZIP generated from an exact clean `main` commit.
+- Record the installed Git commit and perform non-blocking, credential-free `SessionStart` update checks against `refs/heads/main`.
+- Keep ordinary health diagnostics read-only; only the explicit final setup command marks the project connection established, without adding a ninth MCP tool.
+- Define Git and Python as installer/runtime dependencies only, and make MCP and REST usage explicitly independent of the target project's programming language, framework, or SDK choices.
+
 ## [1.0.0] - 2026-08-11
 
 ### Added

@@ -46,8 +46,8 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: '"$SAFE_PYTHON" -m unittest discover -s tests -p "test_*.py"'
 
-      - name: Check release archive
-        if: matrix.python == '3.14'
+      - name: Build the production-main ZIP bundle
+        if: matrix.python == '3.14' && github.ref == 'refs/heads/main'
         run: '"$SAFE_PYTHON" -B -I scripts/build_release.py --dist-dir "$RUNNER_TEMP/acceptora-agent-skill-dist" --source-commit "$GITHUB_SHA"'
 
       - name: Check patch whitespace

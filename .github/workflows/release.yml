@@ -1,25 +1,23 @@
-name: release
+name: production-main-validation
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: production-main-validation-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  publish:
-    name: Validate and publish release assets
+  validate:
+    name: Validate production main
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
     steps:
-      - name: Check out tagged source
+      - name: Check out production source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -33,31 +31,36 @@ jobs:
       - name: Prepare owner-only Python runtime
         uses: ./.github/actions/prepare-python
 
-      - name: Require the tag to match package metadata
-        shell: bash
-        run: |
-          version="$("$SAFE_PYTHON" -I -c 'import json; print(json.load(open("config/package-manifest.json", encoding="utf-8"))["skill"]["version"])')"
-          test "$GITHUB_REF_NAME" = "v$version"
-          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Require production main
+        run: test "$GITHUB_REF" = "refs/heads/main"
 
       - name: Run package tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: '"$SAFE_PYTHON" -m unittest discover -s tests -p "test_*.py"'
 
-      - name: Build immutable release artifacts
+      - name: Build the production-main ZIP bundle
         run: '"$SAFE_PYTHON" -B -I scripts/build_release.py --dist-dir "$RUNNER_TEMP/acceptora-agent-skill-dist" --source-commit "$GITHUB_SHA"'
 
-      - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify the bundle contract and checksums
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "$RUNNER_TEMP/acceptora-agent-skill-dist/verify-generated-work-$PACKAGE_VERSION.zip" \
-            "$RUNNER_TEMP/acceptora-agent-skill-dist/verify-generated-work-$PACKAGE_VERSION.tar.gz" \
-            "$RUNNER_TEMP/acceptora-agent-skill-dist/release-manifest.json" \
-            "$RUNNER_TEMP/acceptora-agent-skill-dist/SHA256SUMS" \
-            --verify-tag \
-            --title "verify-generated-work $PACKAGE_VERSION" \
-            --generate-notes
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/acceptora-agent-skill-dist/release-manifest.json"
+          jq -e \
+            --arg commit "$GITHUB_SHA" \
+            '.distribution.repository_url == "https://github.com/Elvesora/acceptora-agent-skill"
+              and .distribution.branch == "main"
+              and .source_state == "clean"
+              and .source_commit == $commit
+              and .embedded_provenance.filename == "acceptora-agent-skill-provenance.json"
+              and ([.artifacts[] | select(.format == "zip")] | length == 1)' \
+            "$manifest"
+          (
+            cd "$RUNNER_TEMP/acceptora-agent-skill-dist"
+            sha256sum --check SHA256SUMS
+            unzip -t "$(jq -er '.artifacts[] | select(.format == "zip") | .filename' release-manifest.json)"
+          )
+
+      - name: Check patch whitespace
+        run: git diff --check

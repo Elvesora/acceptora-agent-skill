@@ -13,4 +13,4 @@ Apply to environment settings, infrastructure manifests, build/release configura
 - Verify feature-flag off/on and stale-cache behavior.
 - Check logs/metrics/alerts for clear failure and recovery signals.
 
-Use config, manifest, service, health, deployment, and global contract anchors. Never include committed secret values or claim a deployment ran when only configuration was edited.
+Use `config:` for settings and deployment identifiers, `file:` for manifests, `route:` or `api:` for health surfaces, and `global:` for contracts spanning services. Never include committed secret values or claim a deployment ran when only configuration was edited.

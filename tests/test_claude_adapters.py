@@ -112,8 +112,8 @@ class ClaudeTaskStartAdapterTest(unittest.TestCase):
         self.assertEqual(
             {
                 "systemMessage": (
-                    "Agent Verification update check warning: the release check failed safely; "
-                    "no update was downloaded and no setup files were changed."
+                    "Agent Verification update check warning: the Git check failed safely; "
+                    "no skill source was fetched and no setup files were changed."
                 ),
             },
             json.loads(stdout.getvalue()),

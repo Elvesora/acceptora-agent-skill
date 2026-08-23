@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "capabilities_reviewed_on": "2026-08-23",
+  "clients": [
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "reference_build": "codex-cli 0.147.0",
+      "minimum_build": "codex-cli 0.144.0",
+      "project_layout": {
+        "skill_directory": ".agents/skills/verify-generated-work",
+        "instruction_file": "AGENTS.md",
+        "instruction_source": "snippets/AGENTS.md.block"
+      },
+      "user_config": {
+        "default_directory": ".codex",
+        "settings": {
+          "base": "client_config",
+          "path": "hooks.json"
+        },
+        "mcp": {
+          "base": "client_config",
+          "path": "config.toml"
+        }
+      },
+      "templates": {
+        "hooks": {
+          "default": "adapters/codex/hooks.json.example",
+          "platform_overrides": {}
+        },
+        "mcp": {
+          "path": "config/codex-mcp.example.toml",
+          "renderer": "codex_toml"
+        }
+      },
+      "runtime_adapters": [
+        "adapters/codex/task_start.py",
+        "adapters/codex/stop.py"
+      ],
+      "lifecycle": {
+        "baseline_events": [
+          "SessionStart",
+          "UserPromptSubmit"
+        ],
+        "completion_event": "Stop",
+        "update_check_event": "SessionStart"
+      },
+      "discovery_checks": [
+        "/skills",
+        "/mcp or codex mcp list",
+        "/hooks and review changed hook definitions"
+      ],
+      "official_docs": {
+        "skills": "https://developers.openai.com/codex/skills",
+        "hooks": "https://developers.openai.com/codex/hooks",
+        "mcp": "https://developers.openai.com/codex/mcp",
+        "configuration": "https://developers.openai.com/codex/config-reference"
+      }
+    },
+    {
+      "id": "claude-code",
+      "display_name": "Claude Code",
+      "reference_build": "2.1.114",
+      "minimum_build": null,
+      "project_layout": {
+        "skill_directory": ".claude/skills/verify-generated-work",
+        "instruction_file": "CLAUDE.md",
+        "instruction_source": "snippets/CLAUDE.md.block"
+      },
+      "user_config": {
+        "default_directory": ".claude",
+        "settings": {
+          "base": "client_config",
+          "path": "settings.json"
+        },
+        "mcp": {
+          "base": "client_config_parent",
+          "path": ".claude.json"
+        }
+      },
+      "templates": {
+        "hooks": {
+          "default": "adapters/claude/settings.json.example",
+          "platform_overrides": {
+            "windows": "adapters/claude/settings.windows.json.example"
+          }
+        },
+        "mcp": {
+          "path": "config/claude-mcp.example.json",
+          "renderer": "claude_json"
+        }
+      },
+      "runtime_adapters": [
+        "adapters/claude/task_start.py",
+        "adapters/claude/stop.py"
+      ],
+      "lifecycle": {
+        "baseline_events": [
+          "SessionStart",
+          "UserPromptSubmit"
+        ],
+        "completion_event": "Stop",
+        "update_check_event": "SessionStart"
+      },
+      "discovery_checks": [
+        "/skills",
+        "/mcp or claude mcp list",
+        "/hooks"
+      ],
+      "official_docs": {
+        "skills": "https://code.claude.com/docs/en/skills",
+        "hooks": "https://code.claude.com/docs/en/hooks",
+        "mcp": "https://code.claude.com/docs/en/mcp",
+        "configuration": "https://code.claude.com/docs/en/settings"
+      }
+    },
+    {
+      "id": "gemini-cli",
+      "display_name": "Gemini CLI",
+      "reference_build": "0.56.0",
+      "minimum_build": null,
+      "project_layout": {
+        "skill_directory": ".gemini/skills/verify-generated-work",
+        "instruction_file": "GEMINI.md",
+        "instruction_source": "snippets/GEMINI.md.block"
+      },
+      "user_config": {
+        "default_directory": ".gemini",
+        "settings": {
+          "base": "client_config",
+          "path": "settings.json"
+        },
+        "mcp": {
+          "base": "client_config",
+          "path": "settings.json"
+        }
+      },
+      "templates": {
+        "hooks": {
+          "default": "adapters/gemini/hooks.json.example",
+          "platform_overrides": {}
+        },
+        "mcp": {
+          "path": "config/gemini-mcp.example.json",
+          "renderer": "gemini_json"
+        }
+      },
+      "runtime_adapters": [
+        "adapters/gemini/task_start.py",
+        "adapters/gemini/after_agent.py"
+      ],
+      "lifecycle": {
+        "baseline_events": [
+          "SessionStart",
+          "BeforeAgent"
+        ],
+        "completion_event": "AfterAgent",
+        "update_check_event": "SessionStart"
+      },
+      "discovery_checks": [
+        "/skills reload",
+        "/mcp reload or gemini mcp list",
+        "/hooks panel",
+        "restart after mcpServers changes"
+      ],
+      "official_docs": {
+        "skills": "https://geminicli.com/docs/cli/skills/",
+        "hooks": "https://geminicli.com/docs/hooks/",
+        "mcp": "https://geminicli.com/docs/tools/mcp-server/",
+        "configuration": "https://geminicli.com/docs/reference/configuration/"
+      }
+    }
+  ]
+}

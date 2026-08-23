@@ -4,15 +4,17 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 
+# This suite verifies the supported downloadable bundle. GitHub main remains
+# the canonical source and update authority for every publishable artifact.
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = SKILL_ROOT / "scripts" / "build_release.py"
 INSTALLER = SKILL_ROOT / "scripts" / "install.py"
@@ -70,6 +72,67 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def copy_client_registry_contract(source: Path) -> None:
+    registry_source = SKILL_ROOT / "config" / "client-profiles.json"
+    registry = json.loads(registry_source.read_text(encoding="utf-8"))
+    source_paths: set[str] = set()
+    for profile in registry["clients"]:
+        source_paths.add(profile["project_layout"]["instruction_source"])
+        hooks = profile["templates"]["hooks"]
+        source_paths.add(hooks["default"])
+        source_paths.update(hooks.get("platform_overrides", {}).values())
+        source_paths.add(profile["templates"]["mcp"]["path"])
+        source_paths.update(profile["runtime_adapters"])
+
+    registry_destination = source / "config" / "client-profiles.json"
+    registry_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(registry_source, registry_destination)
+    for relative in sorted(source_paths):
+        destination = source / Path(relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_ROOT / Path(relative), destination)
+
+
+def canonical_source_copy(workspace: Path) -> tuple[Path, str]:
+    source = workspace / "canonical-source"
+    shutil.copytree(
+        SKILL_ROOT,
+        source,
+        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "dist", "*.pyc", "*.pyo"),
+    )
+    git_environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Release Test",
+        "GIT_AUTHOR_EMAIL": "release@example.test",
+        "GIT_COMMITTER_NAME": "Release Test",
+        "GIT_COMMITTER_EMAIL": "release@example.test",
+    }
+    for command in (
+        ["init", "--initial-branch=main"],
+        ["config", "core.autocrlf", "false"],
+        ["add", "--all"],
+        ["commit", "-m", "canonical release source"],
+        ["remote", "add", "origin", "https://github.com/Elvesora/acceptora-agent-skill"],
+    ):
+        completed = subprocess.run(
+            ["git", "-C", str(source), *command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=git_environment,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+    commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=git_environment,
+    ).stdout.strip()
+    return source, commit
+
+
 class ReleaseBuilderTest(unittest.TestCase):
     def test_release_versions_use_strict_semver_with_build_metadata(self) -> None:
         builder = load_builder_module()
@@ -96,8 +159,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertEqual("built", first_result["status"])
             self.assertEqual(first_result["source_tree_sha256"], second_result["source_tree_sha256"])
             expected_files = {
-                "verify-generated-work-1.0.0.zip",
-                "verify-generated-work-1.0.0.tar.gz",
+                "verify-generated-work-1.1.0.zip",
                 "release-manifest.json",
                 "SHA256SUMS",
             }
@@ -108,9 +170,17 @@ class ReleaseBuilderTest(unittest.TestCase):
 
             manifest = json.loads((first_dist / "release-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual("verify-generated-work", manifest["name"])
-            self.assertEqual("1.0.0", manifest["version"])
+            self.assertEqual("1.1.0", manifest["version"])
+            self.assertEqual(
+                {
+                    "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                    "branch": "main",
+                },
+                manifest["distribution"],
+            )
             self.assertEqual("UNVERSIONED", manifest["source_commit"])
             self.assertIn(manifest["source_state"], {"dirty_allowed", "unversioned", "unversioned_requested"})
+            self.assertEqual("2026-08-23", manifest["client_capabilities_reviewed_on"])
             self.assertEqual(["codex", "claude-code", "gemini-cli"], manifest["supported_clients"])
             installer = load_installer_module()
             self.assertEqual(
@@ -121,7 +191,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                 {
                     "codex": "codex-cli 0.147.0",
                     "claude-code": "2.1.114",
-                    "gemini-cli": "0.24.5",
+                    "gemini-cli": "0.56.0",
                 },
                 manifest["reference_client_builds"],
             )
@@ -132,6 +202,8 @@ class ReleaseBuilderTest(unittest.TestCase):
             paths = [entry["path"] for entry in manifest["files"]]
             self.assertEqual(sorted(paths), paths)
             self.assertIn("SKILL.md", paths)
+            self.assertIn("config/client-profiles.json", paths)
+            self.assertIn("references/client-capabilities.md", paths)
             self.assertIn("SETUP.md", paths)
             self.assertIn("LICENSE", paths)
             self.assertIn("CHANGELOG.md", paths)
@@ -150,11 +222,13 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertFalse(any(path.startswith("tests/") for path in paths))
             self.assertFalse(any(path.endswith(".deferred") for path in paths))
             self.assertFalse(any("__pycache__" in path for path in paths))
-            with zipfile.ZipFile(first_dist / "verify-generated-work-1.0.0.zip") as archive:
+            with zipfile.ZipFile(first_dist / "verify-generated-work-1.1.0.zip") as archive:
                 for path in paths:
                     if path.endswith(".md"):
                         body = archive.read(f"verify-generated-work/{path}").decode("utf-8")
                         self.assertNotIn("[Unreleased]", body, path)
+                        if path == "CHANGELOG.md":
+                            self.assertIn("## [1.1.0] - 2026-08-23", body, path)
 
             artifacts = {entry["filename"]: entry for entry in manifest["artifacts"]}
             for name, entry in artifacts.items():
@@ -165,17 +239,89 @@ class ReleaseBuilderTest(unittest.TestCase):
             for line in (first_dist / "SHA256SUMS").read_text(encoding="ascii").splitlines():
                 digest, name = line.split("  ", 1)
                 checksums[name] = digest
-            self.assertEqual(sha256(first_dist / "verify-generated-work-1.0.0.zip"), checksums["verify-generated-work-1.0.0.zip"])
-            self.assertEqual(sha256(first_dist / "verify-generated-work-1.0.0.tar.gz"), checksums["verify-generated-work-1.0.0.tar.gz"])
+            self.assertEqual(sha256(first_dist / "verify-generated-work-1.1.0.zip"), checksums["verify-generated-work-1.1.0.zip"])
             self.assertEqual(sha256(first_dist / "release-manifest.json"), checksums["release-manifest.json"])
+
+    def test_clean_canonical_main_builds_identical_directly_extractable_zip_bundles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source, commit = canonical_source_copy(workspace)
+            first_dist = workspace / "first-clean"
+            second_dist = workspace / "second-clean"
+
+            first = run_builder(first_dist, source, source_commit=None, allow_dirty=False)
+            second = run_builder(second_dist, source, source_commit=None, allow_dirty=False)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual(0, second.returncode, second.stderr)
+            zip_name = "verify-generated-work-1.1.0.zip"
+            self.assertEqual((first_dist / zip_name).read_bytes(), (second_dist / zip_name).read_bytes())
+            self.assertEqual(
+                (first_dist / "release-manifest.json").read_bytes(),
+                (second_dist / "release-manifest.json").read_bytes(),
+            )
+
+            manifest = json.loads((first_dist / "release-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual("clean", manifest["source_state"])
+            self.assertEqual(commit, manifest["source_commit"])
+            self.assertEqual(
+                "https://github.com/Elvesora/acceptora-agent-skill",
+                manifest["source_repository_url"],
+            )
+            self.assertEqual("main", manifest["source_branch"])
+            self.assertEqual(
+                f"sha256:{sha256(first_dist / zip_name)}",
+                next(entry for entry in manifest["artifacts"] if entry["format"] == "zip")["sha256"],
+            )
+
+            with zipfile.ZipFile(first_dist / zip_name) as archive:
+                provenance_body = archive.read("acceptora-agent-skill-provenance.json")
+                names = archive.namelist()
+            provenance = json.loads(provenance_body)
+            self.assertEqual(
+                {
+                    "schema_version": 1,
+                    "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                    "branch": "main",
+                    "commit_sha": commit,
+                    "source_tree_sha256": manifest["source_tree_sha256"],
+                },
+                provenance,
+            )
+            self.assertEqual(
+                "sha256:" + hashlib.sha256(provenance_body).hexdigest(),
+                manifest["embedded_provenance"]["sha256"],
+            )
+            self.assertTrue(all(
+                name == "acceptora-agent-skill-provenance.json" or name.startswith("verify-generated-work/")
+                for name in names
+            ))
+
+    def test_publishable_bundle_rejects_a_non_main_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source, _ = canonical_source_copy(workspace)
+            switched = subprocess.run(
+                ["git", "-C", str(source), "switch", "-c", "feature/ci"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, switched.returncode, switched.stderr)
+            dist = workspace / "feature-dist"
+
+            refused = run_builder(dist, source, source_commit=None, allow_dirty=False)
+
+            self.assertEqual(2, refused.returncode)
+            self.assertIn("production main branch", refused.stderr)
+            self.assertFalse(dist.exists())
 
     def test_archive_members_are_safe_sorted_and_have_normalized_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             dist = Path(temporary) / "dist"
             result = run_builder(dist)
             self.assertEqual(0, result.returncode, result.stderr)
-            zip_path = dist / "verify-generated-work-1.0.0.zip"
-            tar_path = dist / "verify-generated-work-1.0.0.tar.gz"
+            zip_path = dist / "verify-generated-work-1.1.0.zip"
 
             with zipfile.ZipFile(zip_path) as archive:
                 infos = archive.infolist()
@@ -187,15 +333,38 @@ class ReleaseBuilderTest(unittest.TestCase):
                 self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in infos))
                 self.assertTrue(all(info.create_system == 3 for info in infos))
 
-            with tarfile.open(tar_path, "r:gz") as archive:
-                members = archive.getmembers()
-                names = [member.name for member in members]
-                self.assertEqual(sorted(names), names)
-                self.assertTrue(all(member.isfile() for member in members))
-                self.assertTrue(all(member.uid == 0 and member.gid == 0 for member in members))
-                self.assertTrue(all(member.uname == "" and member.gname == "" for member in members))
-                self.assertTrue(all(member.mtime == 0 for member in members))
-                self.assertTrue(all(member.mode in {0o644, 0o755} for member in members))
+    def test_client_registry_is_required_and_may_not_reference_missing_release_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "source"
+            (source / "config").mkdir(parents=True)
+            (source / "SKILL.md").write_text(
+                "---\nname: verify-generated-work\ndescription: Test.\n---\n",
+                encoding="utf-8",
+            )
+            (source / "config" / "package-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "distribution": {
+                            "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                            "branch": "main",
+                        },
+                        "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            missing_registry = run_builder(workspace / "missing-registry-dist", source)
+            self.assertEqual(2, missing_registry.returncode)
+            self.assertIn("config/client-profiles.json", missing_registry.stderr)
+
+            copy_client_registry_contract(source)
+            missing_adapter = source / "adapters" / "codex" / "stop.py"
+            missing_adapter.unlink()
+            missing_reference = run_builder(workspace / "missing-reference-dist", source)
+            self.assertEqual(2, missing_reference.returncode)
+            self.assertIn("references a missing release file: adapters/codex/stop.py", missing_reference.stderr)
 
     def test_rejects_secret_files_and_symlinks_without_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -207,6 +376,10 @@ class ReleaseBuilderTest(unittest.TestCase):
             (source / "config" / "package-manifest.json").write_text(
                 json.dumps(
                     {
+                        "distribution": {
+                            "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                            "branch": "main",
+                        },
                         "skill": {"name": "verify-generated-work", "version": "1.0.0"},
                         "integration": {"version": "1.0.0"},
                         "contract": {"version": "1.0.0", "mcp_protocol_version": "2025-11-25"},
@@ -214,6 +387,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            copy_client_registry_contract(source)
             (source / ".env").write_text("ACCEPTORA_AGENT_TOKEN=secret\n", encoding="utf-8")
             dist = workspace / "secret-dist"
             secret_result = run_builder(dist, source)
@@ -278,6 +452,10 @@ class ReleaseBuilderTest(unittest.TestCase):
             (source / "config" / "package-manifest.json").write_text(
                 json.dumps(
                     {
+                        "distribution": {
+                            "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                            "branch": "main",
+                        },
                         "skill": {"name": "verify-generated-work", "version": "1.0.0"},
                         "integration": {"version": "1.0.0"},
                         "contract": {"version": "1.0.0", "mcp_protocol_version": "2025-11-25"},
@@ -285,6 +463,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            copy_client_registry_contract(source)
             git_environment = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": "Release Test",
@@ -293,10 +472,11 @@ class ReleaseBuilderTest(unittest.TestCase):
                 "GIT_COMMITTER_EMAIL": "release@example.test",
             }
             for command in (
-                ["init"],
+                ["init", "--initial-branch=main"],
                 ["config", "core.autocrlf", "false"],
                 ["add", "."],
                 ["commit", "-m", "test source"],
+                ["remote", "add", "origin", "https://github.com/Elvesora/acceptora-agent-skill"],
             ):
                 completed = subprocess.run(
                     ["git", "-C", str(repository), *command],
@@ -394,9 +574,16 @@ class ReleaseBuilderTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
-                json.dumps({"skill": {"name": "verify-generated-work", "version": "1.0.0"}}),
+                json.dumps({
+                    "distribution": {
+                        "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                        "branch": "main",
+                    },
+                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                }),
                 encoding="utf-8",
             )
+            copy_client_registry_contract(source)
             git_environment = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": "Release Test",
@@ -405,10 +592,11 @@ class ReleaseBuilderTest(unittest.TestCase):
                 "GIT_COMMITTER_EMAIL": "release@example.test",
             }
             for command in (
-                ["init"],
+                ["init", "--initial-branch=main"],
                 ["config", "core.autocrlf", "false"],
                 ["add", "."],
                 ["commit", "-m", "test source"],
+                ["remote", "add", "origin", "https://github.com/Elvesora/acceptora-agent-skill"],
             ):
                 completed = subprocess.run(
                     ["git", "-C", str(repository), *command],
@@ -457,9 +645,16 @@ class ReleaseBuilderTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
-                json.dumps({"skill": {"name": "verify-generated-work", "version": "1.0.0"}}),
+                json.dumps({
+                    "distribution": {
+                        "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                        "branch": "main",
+                    },
+                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                }),
                 encoding="utf-8",
             )
+            copy_client_registry_contract(source)
             empty_path = workspace / "empty-path"
             empty_path.mkdir()
             result = run_builder(
@@ -486,9 +681,16 @@ class ReleaseBuilderTest(unittest.TestCase):
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
-                json.dumps({"skill": {"name": "verify-generated-work", "version": "1.0.0"}}),
+                json.dumps({
+                    "distribution": {
+                        "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                        "branch": "main",
+                    },
+                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                }),
                 encoding="utf-8",
             )
+            copy_client_registry_contract(source)
             executable_name = "git.exe" if os.name == "nt" else "git"
             fake_git = repository / executable_name
             fake_git.write_text("not an executable\n", encoding="utf-8")

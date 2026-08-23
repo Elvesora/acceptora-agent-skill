@@ -50,7 +50,16 @@ Each item must include:
 
 ## Automated evidence
 
-Record only commands/checks actually run, including working directory/target, exit status, concise result, source revision, and optional redacted excerpt. Automated evidence is read-only and never increments manual progress.
+Record every relevant command/check truthfully, including working directory/target, exit status, concise result, and source revision. Use `outcome: passed`, `failed`, or `warning` only when execution actually occurred; use `not_run` when it did not.
+
+Keep execution and proof quality separate:
+
+- set `evidence_sufficiency` to `sufficient` only when the record is enough for the owner to evaluate the stated requirement;
+- set it to `insufficient` when a run result exists but does not prove the requirement, including a superficially passing narrow test;
+- for `not_run`, use `evidence_sufficiency: insufficient` when reporting sufficiency and add a machine-readable `blocker_reason` such as `missing_credentials` or `environment_unavailable`;
+- omit `blocker_reason` for executed outcomes; explain details safely in `summary` without including credentials.
+
+Historical evidence may omit sufficiency because the fields are backward-compatible additions. Never infer that an omitted value is sufficient. Automated evidence is read-only and never increments manual progress or grants acceptance.
 
 ## Structured known limits
 

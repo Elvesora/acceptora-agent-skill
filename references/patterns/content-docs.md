@@ -13,4 +13,4 @@ Apply to articles, product copy, guides, references, campaigns, metadata, and re
 - Check dates, versions, pricing, routes, API fields, and screenshots for staleness.
 - Confirm draft/publish state and that no unapproved content was changed.
 
-Use provider-object, file, URL, metadata, and rendered-page anchors. Do not invent source support or imply publication when only a local file changed.
+Use `content:` for provider objects or documents, `file:` for repository sources, `route:` for rendered URLs or screens, and `config:` for metadata. Do not invent source support or imply publication when only a local file changed.

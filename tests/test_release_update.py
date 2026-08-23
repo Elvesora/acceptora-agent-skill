@@ -1,355 +1,272 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 from unittest.mock import patch
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = PACKAGE_ROOT / "adapters" / "hook_runtime.py"
-SPEC = importlib.util.spec_from_file_location("acceptora_release_update_runtime", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location("acceptora_skill_update_runtime", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 HOOK_RUNTIME = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = HOOK_RUNTIME
 SPEC.loader.exec_module(HOOK_RUNTIME)
 
-
-SOURCE_COMMIT = "c" * 40
-BUNDLE_SHA256 = "sha256:" + ("d" * 64)
-MANIFEST_URL = "https://acceptora.example/agent-skill/release-manifest.json"
-BUNDLE_URL = "https://acceptora.example/agent-skill/verify-generated-work.zip"
-
-
-def release_file(path: str, digest_character: str) -> dict[str, Any]:
-    return {
-        "path": path,
-        "archive_path": f"verify-generated-work/{path}",
-        "size": 123,
-        "mode": "0755" if path.endswith(".py") else "0644",
-        "sha256": "sha256:" + (digest_character * 64),
-    }
+REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
+BRANCH = "main"
+INSTALLED_COMMIT = "a" * 40
+CURRENT_COMMIT = "b" * 40
+GIT_EXECUTABLE = str(Path(sys.executable).resolve())
 
 
-def source_tree_sha256(files: list[dict[str, Any]]) -> str:
-    body = json.dumps(files, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return "sha256:" + hashlib.sha256(body).hexdigest()
-
-
-INSTALLED_RELEASE_FILES = [
-    release_file("SKILL.md", "a"),
-    release_file("config/package-manifest.json", "b"),
-    release_file("scripts/install.py", "c"),
-]
-PUBLISHED_RELEASE_FILES = [
-    release_file("SKILL.md", "d"),
-    release_file("config/package-manifest.json", "e"),
-    release_file("scripts/install.py", "f"),
-]
-INSTALLED_SOURCE_TREE_SHA256 = source_tree_sha256(INSTALLED_RELEASE_FILES)
-PUBLISHED_SOURCE_TREE_SHA256 = source_tree_sha256(PUBLISHED_RELEASE_FILES)
-
-
-class FakeResponse:
-    def __init__(self, body: bytes, headers: dict[str, str], status: int = 200) -> None:
-        self.body = body
-        self.headers = headers
-        self.status = status
-
-    def __enter__(self) -> FakeResponse:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def read(self, maximum: int) -> bytes:
-        return self.body[:maximum]
-
-
-class FakeOpener:
-    def __init__(self, response: FakeResponse | Exception) -> None:
-        self.response = response
-        self.requests: list[tuple[Any, float]] = []
-
-    def open(self, request: Any, timeout: float) -> FakeResponse:
-        self.requests.append((request, timeout))
-        if isinstance(self.response, Exception):
-            raise self.response
-        return self.response
-
-
-def release_manifest(
-    *,
-    version: str = "1.1.0",
-    files: list[dict[str, Any]] | None = None,
-    source_tree_digest: str | None = None,
-    source_state: str = "clean",
-) -> dict[str, Any]:
-    selected_files = [dict(entry) for entry in (files if files is not None else PUBLISHED_RELEASE_FILES)]
-    return {
-        "schema_version": 1,
-        "name": "verify-generated-work",
-        "version": version,
-        "integration_version": version,
-        "contract_version": "1.0.0",
-        "mcp_protocol_version": "2025-11-25",
-        "source_commit": SOURCE_COMMIT,
-        "source_state": source_state,
-        "source_tree_sha256": source_tree_digest or source_tree_sha256(selected_files),
-        "supported_clients": ["codex", "claude-code", "gemini-cli"],
-        "reference_client_builds": {},
-        "archive_prefix": "verify-generated-work",
-        "files": selected_files,
-        "artifacts": [
-            {
-                "filename": f"verify-generated-work-{version}.zip",
-                "format": "zip",
-                "size": 1234,
-                "sha256": BUNDLE_SHA256,
-            },
-            {
-                "filename": f"verify-generated-work-{version}.tar.gz",
-                "format": "tar.gz",
-                "size": 1235,
-                "sha256": "sha256:" + ("e" * 64),
-            },
-        ],
-    }
-
-
-def encoded_response(
-    manifest: dict[str, Any],
-    *,
-    digest: str | None = None,
-    status: int = 200,
-) -> FakeResponse:
-    body = (json.dumps(manifest, sort_keys=True) + "\n").encode("utf-8")
-    return raw_response(body, digest=digest, status=status)
-
-
-def raw_response(
-    body: bytes,
-    *,
-    content_type: str = "application/json; charset=UTF-8",
-    digest: str | None = None,
-    include_digest: bool = True,
-    status: int = 200,
-) -> FakeResponse:
-    actual = "sha256:" + hashlib.sha256(body).hexdigest()
-    headers = {
-        "Content-Type": content_type,
-        "Content-Length": str(len(body)),
-    }
-    if include_digest:
-        headers["X-Acceptora-Artifact-SHA256"] = digest or actual
-    return FakeResponse(
-        body,
-        headers,
-        status,
-    )
-
-
-def runtime_config(client: str = "codex") -> dict[str, Any]:
+def runtime_config(client: str = "codex") -> dict[str, object]:
     return {
         "client": client,
-        "release_manifest_url": MANIFEST_URL,
-        "release_bundle_url": BUNDLE_URL,
-        "release_update_timeout_seconds": 2,
-        "installed_source_tree_sha256": INSTALLED_SOURCE_TREE_SHA256,
+        "skill_repository_url": REPOSITORY_URL,
+        "skill_repository_branch": BRANCH,
+        "installed_commit_sha": INSTALLED_COMMIT,
+        "git_executable": GIT_EXECUTABLE,
+        "skill_update_timeout_seconds": 2,
     }
 
 
-class ReleaseUpdateCheckTest(unittest.TestCase):
-    def test_verified_newer_release_returns_digest_bound_notice_without_token_or_bundle_request(self) -> None:
-        opener = FakeOpener(encoded_response(release_manifest()))
+def git_result(
+    commit_sha: str = CURRENT_COMMIT,
+    *,
+    returncode: int = 0,
+    stdout: bytes | None = None,
+    stderr: bytes = b"",
+) -> subprocess.CompletedProcess[bytes]:
+    body = stdout if stdout is not None else f"{commit_sha}\trefs/heads/main\n".encode("ascii")
+    return subprocess.CompletedProcess([GIT_EXECUTABLE], returncode, stdout=body, stderr=stderr)
 
-        with tempfile.TemporaryDirectory() as temporary, patch.object(
-            HOOK_RUNTIME.urllib.request,
-            "build_opener",
-            return_value=opener,
-        ):
-            cache_path = Path(temporary) / "release-update.json"
-            notice = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1000)
 
-            self.assertIsInstance(notice, str)
-            self.assertIn("1.0.0 -> 1.1.0", notice)
-            self.assertIn(BUNDLE_SHA256, notice)
-            self.assertIn("No bundle was downloaded", notice)
-            self.assertEqual(1, len(opener.requests))
-            request, timeout = opener.requests[0]
-            self.assertEqual(MANIFEST_URL, request.full_url)
-            self.assertEqual("GET", request.method)
-            self.assertEqual(2, timeout)
-            self.assertIsNone(request.get_header("Authorization"))
-            self.assertNotIn("ACCEPTORA_AGENT_TOKEN", str(request.header_items()))
+def run_git(git_executable: str, working_directory: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    process = subprocess.run(
+        [git_executable, *arguments],
+        cwd=working_directory,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise AssertionError(process.stderr)
+    return process
 
+
+def create_local_remote(git_executable: str, root: Path, name: str) -> tuple[str, str]:
+    worktree = root / f"{name}-worktree"
+    remote = root / f"{name}.git"
+    worktree.mkdir()
+    run_git(git_executable, root, "init", "--initial-branch=main", str(worktree))
+    run_git(git_executable, worktree, "config", "user.name", "Acceptora Test")
+    run_git(git_executable, worktree, "config", "user.email", "acceptora-test@example.invalid")
+    (worktree / "identity.txt").write_text(name, encoding="utf-8")
+    run_git(git_executable, worktree, "add", "identity.txt")
+    run_git(git_executable, worktree, "commit", "-m", f"Create {name} identity")
+    commit_sha = run_git(git_executable, worktree, "rev-parse", "HEAD").stdout.strip().lower()
+    run_git(git_executable, root, "init", "--bare", str(remote))
+    run_git(git_executable, worktree, "remote", "add", "origin", remote.as_uri())
+    run_git(git_executable, worktree, "push", "origin", "main")
+    return remote.as_uri(), commit_sha
+
+
+class GitMainUpdateCheckTest(unittest.TestCase):
+    def test_different_main_commit_returns_agent_driven_notice_without_credentials_or_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ,
+            {
+                "ACCEPTORA_AGENT_TOKEN": "must-not-reach-git",
+                "GIT_ASKPASS": "must-not-run",
+                "SSH_ASKPASS": "must-not-run",
+            },
+            clear=False,
+        ), patch.object(HOOK_RUNTIME.subprocess, "run", return_value=git_result()) as run:
+            cache_path = Path(temporary) / "skill-update.json"
+            notice = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1000)
             record = json.loads(cache_path.read_text(encoding="utf-8"))
-            self.assertEqual("update_available", record["status"])
-            self.assertEqual(0, record["setup_mutations_performed"])
-            self.assertTrue(record["cache_written"])
-            self.assertFalse(record["auto_apply"])
-            self.assertEqual(BUNDLE_URL, record["published"]["bundle"]["download_url"])
-            self.assertEqual(HOOK_RUNTIME._record_digest(record), record["record_sha256"])
 
-    def test_fresh_verified_cache_avoids_network_and_expiry_rechecks(self) -> None:
-        first_opener = FakeOpener(encoded_response(release_manifest()))
-        second_opener = FakeOpener(encoded_response(release_manifest()))
+        self.assertIsInstance(notice, str)
+        assert notice is not None
+        self.assertIn(INSTALLED_COMMIT[:12], notice)
+        self.assertIn(CURRENT_COMMIT[:12], notice)
+        self.assertIn(REPOSITORY_URL, notice)
+        self.assertIn("clone a fresh main checkout", notice)
+        self.assertIn("read SETUP.md completely from that checkout", notice)
+        self.assertIn('"Coding-agent install or update" procedure', notice)
+        self.assertIn("printed cache path identifies the installed runtime", notice)
+        self.assertIn(str(cache_path), notice)
+        self.assertIn("No source was fetched and no update was applied", notice)
 
+        command = run.call_args.args[0]
+        self.assertEqual(
+            [
+                GIT_EXECUTABLE,
+                "-c",
+                "credential.helper=",
+                "-c",
+                "core.askPass=",
+                "-c",
+                "http.followRedirects=false",
+                "ls-remote",
+                "--exit-code",
+                "--heads",
+                REPOSITORY_URL,
+                "refs/heads/main",
+            ],
+            command,
+        )
+        self.assertEqual(2, run.call_args.kwargs["timeout"])
+        environment = run.call_args.kwargs["env"]
+        self.assertNotIn("ACCEPTORA_AGENT_TOKEN", environment)
+        self.assertNotIn("GIT_ASKPASS", environment)
+        self.assertNotIn("SSH_ASKPASS", environment)
+        self.assertEqual("0", environment["GIT_TERMINAL_PROMPT"])
+        isolated_worktree = Path(run.call_args.kwargs["cwd"])
+        self.assertTrue(isolated_worktree.name.startswith("acceptora-skill-update-"))
+        self.assertEqual(str(isolated_worktree.resolve()), environment["GIT_CEILING_DIRECTORIES"])
+
+        self.assertEqual("acceptora_git_main_update_check", record["kind"])
+        self.assertEqual("update_available", record["status"])
+        self.assertEqual(CURRENT_COMMIT, record["current_commit_sha"])
+        self.assertEqual(INSTALLED_COMMIT, record["installed_commit_sha"])
+        self.assertEqual(0, record["setup_mutations_performed"])
+        self.assertTrue(record["cache_written"])
+        self.assertFalse(record["auto_apply"])
+        self.assertEqual(HOOK_RUNTIME._record_digest(record), record["record_sha256"])
+
+    def test_equal_main_commit_is_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            HOOK_RUNTIME.subprocess,
+            "run",
+            return_value=git_result(INSTALLED_COMMIT),
+        ):
+            cache_path = Path(temporary) / "skill-update.json"
+            notice = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1000)
+            record = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertIsNone(notice)
+        self.assertEqual("current", record["status"])
+        self.assertEqual(INSTALLED_COMMIT, record["current_commit_sha"])
+
+    def test_five_minute_cache_avoids_network_and_rechecks_after_expiry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            cache_path = Path(temporary) / "release-update.json"
-            with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=first_opener):
-                first = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1000)
-            with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=second_opener):
-                cached = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1299)
-                refreshed = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1301)
+            cache_path = Path(temporary) / "skill-update.json"
+            with patch.object(HOOK_RUNTIME.subprocess, "run", return_value=git_result()) as first_run:
+                first = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1000)
+            with patch.object(HOOK_RUNTIME.subprocess, "run", return_value=git_result()) as second_run:
+                cached = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1299)
+                refreshed = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1301)
 
-            self.assertEqual(first, cached)
-            self.assertIn("1.0.0 -> 1.1.0", refreshed)
-            self.assertIn(BUNDLE_SHA256, refreshed)
-            self.assertEqual(1, len(first_opener.requests))
-            self.assertEqual(1, len(second_opener.requests))
+        self.assertEqual(first, cached)
+        self.assertIn(CURRENT_COMMIT[:12], refreshed)
+        first_run.assert_called_once()
+        second_run.assert_called_once()
 
-    def test_verified_cache_is_bound_to_the_installed_client(self) -> None:
-        codex_opener = FakeOpener(encoded_response(release_manifest()))
-        claude_opener = FakeOpener(encoded_response(release_manifest()))
-
+    def test_cache_is_bound_to_client_source_and_installed_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            cache_path = Path(temporary) / "release-update.json"
-            with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=codex_opener):
-                HOOK_RUNTIME._check_release_update(runtime_config("codex"), cache_path, now=1000)
-            with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=claude_opener):
-                HOOK_RUNTIME._check_release_update(runtime_config("claude-code"), cache_path, now=1001)
+            cache_path = Path(temporary) / "skill-update.json"
+            with patch.object(HOOK_RUNTIME.subprocess, "run", return_value=git_result()) as run:
+                HOOK_RUNTIME._check_skill_update(runtime_config("codex"), cache_path, now=1000)
+                HOOK_RUNTIME._check_skill_update(runtime_config("claude-code"), cache_path, now=1001)
+                record = json.loads(cache_path.read_text(encoding="utf-8"))
 
-            self.assertEqual(1, len(codex_opener.requests))
-            self.assertEqual(1, len(claude_opener.requests))
-            self.assertEqual("claude-code", json.loads(cache_path.read_text(encoding="utf-8"))["client"])
+        self.assertEqual(2, run.call_count)
+        self.assertEqual("claude-code", record["client"])
 
-    def test_current_identity_is_silent_and_identity_reuse_or_older_release_warns(self) -> None:
-        cases = (
-            (release_manifest(version="1.0.0", files=INSTALLED_RELEASE_FILES), None, "current"),
-            (release_manifest(version="1.0.0+build.1", files=INSTALLED_RELEASE_FILES), None, "current"),
-            (release_manifest(version="1.0.0"), "reused a different release identity", "identity_conflict"),
-            (release_manifest(version="0.9.0"), "older than installed", "published_older"),
+    def test_unavailable_main_fails_open_and_malformed_output_warns_without_echoing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_path = Path(temporary) / "skill-update.json"
+            with patch.object(HOOK_RUNTIME.subprocess, "run", return_value=git_result(returncode=2)):
+                self.assertIsNone(HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1000))
+            self.assertEqual("unavailable", json.loads(cache_path.read_text(encoding="utf-8"))["status"])
+
+            malformed = b"attacker-controlled-output\n"
+            with patch.object(
+                HOOK_RUNTIME.subprocess,
+                "run",
+                return_value=git_result(stdout=malformed),
+            ):
+                notice = HOOK_RUNTIME._check_skill_update(runtime_config(), cache_path, now=1301)
+            record = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertIn("production branch response was invalid", notice)
+        self.assertNotIn("attacker-controlled-output", notice)
+        self.assertEqual("rejected", record["status"])
+
+    def test_invalid_or_oversized_ls_remote_output_is_rejected(self) -> None:
+        invalid_outputs = (
+            b"",
+            b"not-a-commit\trefs/heads/main\n",
+            f"{CURRENT_COMMIT}\trefs/heads/other\n".encode("ascii"),
+            (
+                f"{CURRENT_COMMIT}\trefs/heads/main\n"
+                f"{INSTALLED_COMMIT}\trefs/heads/main\n"
+            ).encode("ascii"),
+            b"x" * (HOOK_RUNTIME.MAX_GIT_LS_REMOTE_BYTES + 1),
         )
-        for manifest, expected_notice, expected_status in cases:
-            with self.subTest(status=expected_status), tempfile.TemporaryDirectory() as temporary:
-                opener = FakeOpener(encoded_response(manifest))
-                cache_path = Path(temporary) / "release-update.json"
-                with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=opener):
-                    notice = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1000)
+        for output in invalid_outputs:
+            with self.subTest(output_length=len(output)), self.assertRaises(HOOK_RUNTIME.SkillUpdateRejected), patch.object(
+                HOOK_RUNTIME.subprocess,
+                "run",
+                return_value=git_result(stdout=output),
+            ):
+                HOOK_RUNTIME._remote_main_commit(GIT_EXECUTABLE, REPOSITORY_URL, BRANCH, 2)
 
-                if expected_notice is None:
-                    self.assertIsNone(notice)
-                else:
-                    self.assertIn(expected_notice, notice)
-                self.assertEqual(expected_status, json.loads(cache_path.read_text(encoding="utf-8"))["status"])
+    def test_local_repository_url_rewrite_cannot_redirect_the_production_lookup(self) -> None:
+        discovered_git = shutil.which("git")
+        if discovered_git is None:
+            self.skipTest("Git is required for the real update lookup regression test")
+        git_executable = str(Path(discovered_git).resolve())
 
-        self.assertEqual(1, HOOK_RUNTIME._compare_semantic_versions("1.10.0", "1.9.0"))
-        self.assertEqual(0, HOOK_RUNTIME._compare_semantic_versions("1.0.0+build.2", "1.0.0+build.1"))
-        self.assertEqual(1, HOOK_RUNTIME._compare_semantic_versions("1.0.0", "1.0.0-rc.1"))
+        with tempfile.TemporaryDirectory(prefix="acceptora-skill-update-regression-") as temporary:
+            root = Path(temporary)
+            canonical_url, canonical_commit = create_local_remote(git_executable, root, "canonical")
+            redirected_url, redirected_commit = create_local_remote(git_executable, root, "redirected")
+            target_repository = root / "target"
+            target_repository.mkdir()
+            run_git(git_executable, target_repository, "init", "--initial-branch=main")
+            run_git(
+                git_executable,
+                target_repository,
+                "config",
+                f"url.{redirected_url}.insteadOf",
+                canonical_url,
+            )
 
-    def test_unavailable_or_redirected_manifest_fails_open_and_is_cached_without_following(self) -> None:
-        failures = (
-            urllib.error.HTTPError(MANIFEST_URL, 503, "unavailable", {}, None),
-            urllib.error.HTTPError(MANIFEST_URL, 302, "redirect", {"Location": "https://evil.example"}, None),
-            urllib.error.URLError("offline"),
-        )
-        for failure in failures:
-            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
-                opener = FakeOpener(failure)
-                cache_path = Path(temporary) / "release-update.json"
-                with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=opener) as build_opener:
-                    notice = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1000)
+            redirected_lookup = run_git(
+                git_executable,
+                target_repository,
+                "ls-remote",
+                "--exit-code",
+                "--heads",
+                canonical_url,
+                "refs/heads/main",
+            )
+            self.assertEqual(redirected_commit, redirected_lookup.stdout.partition("\t")[0].lower())
 
-                self.assertIsNone(notice)
-                self.assertEqual(1, len(opener.requests))
-                self.assertIsInstance(build_opener.call_args.args[0], HOOK_RUNTIME._NoRedirect)
-                self.assertEqual("unavailable", json.loads(cache_path.read_text(encoding="utf-8"))["status"])
-                cached_opener = FakeOpener(AssertionError("fresh unavailable cache reached the network"))
-                with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=cached_opener):
-                    self.assertIsNone(HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1200))
-                self.assertEqual([], cached_opener.requests)
+            original_working_directory = Path.cwd()
+            try:
+                os.chdir(target_repository)
+                observed_commit = HOOK_RUNTIME._remote_main_commit(
+                    git_executable,
+                    canonical_url,
+                    BRANCH,
+                    5,
+                )
+            finally:
+                os.chdir(original_working_directory)
 
-    def test_untrusted_or_oversized_manifest_is_rejected_and_safely_cached(self) -> None:
-        empty_inventory = release_manifest()
-        empty_inventory["files"] = []
-        boolean_schema = release_manifest()
-        boolean_schema["schema_version"] = True
-        unsafe_inventory = release_manifest(files=[release_file("../SKILL.md", "f")])
-        dot_inventory = release_manifest(files=[release_file(".", "f")])
-        duplicate_inventory = release_manifest(
-            files=[release_file("SKILL.md", "a"), release_file("SKILL.md", "b")],
-        )
-        wrong_name = release_manifest()
-        wrong_name["name"] = "attacker-controlled-package"
-        invalid_version = release_manifest()
-        invalid_version["version"] = "latest"
-        invalid_commit = release_manifest()
-        invalid_commit["source_commit"] = "not-a-commit"
-        unsupported_client = release_manifest()
-        unsupported_client["supported_clients"] = ["claude-code"]
-        missing_zip = release_manifest()
-        missing_zip["artifacts"] = []
-        duplicate_zip = release_manifest()
-        duplicate_zip["artifacts"] = [duplicate_zip["artifacts"][0], duplicate_zip["artifacts"][0]]
-        invalid_cases = (
-            encoded_response(release_manifest(), digest="sha256:" + ("0" * 64)),
-            raw_response(b"not-json\n"),
-            raw_response(b"{}\n", content_type="text/plain"),
-            raw_response(b"{}\n", include_digest=False),
-            encoded_response(release_manifest(source_state="dirty_allowed")),
-            encoded_response(release_manifest(), status=206),
-            encoded_response(empty_inventory),
-            encoded_response(boolean_schema),
-            encoded_response(unsafe_inventory),
-            encoded_response(dot_inventory),
-            encoded_response(duplicate_inventory),
-            encoded_response(wrong_name),
-            encoded_response(invalid_version),
-            encoded_response(invalid_commit),
-            encoded_response(unsupported_client),
-            encoded_response(missing_zip),
-            encoded_response(duplicate_zip),
-            encoded_response(
-                release_manifest(source_tree_digest="sha256:" + ("0" * 64)),
-            ),
-            FakeResponse(
-                b"{}",
-                {
-                    "Content-Type": "application/json",
-                    "Content-Length": str(HOOK_RUNTIME.MAX_RELEASE_MANIFEST_BYTES + 1),
-                    "X-Acceptora-Artifact-SHA256": "sha256:" + ("0" * 64),
-                },
-            ),
-        )
-        for response in invalid_cases:
-            with self.subTest(length=response.headers["Content-Length"]), tempfile.TemporaryDirectory() as temporary:
-                opener = FakeOpener(response)
-                cache_path = Path(temporary) / "release-update.json"
-                with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=opener):
-                    notice = HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1000)
-
-                self.assertIn("failed integrity checks", notice)
-                record_text = cache_path.read_text(encoding="utf-8")
-                record = json.loads(record_text)
-                self.assertEqual("rejected", record["status"])
-                self.assertIsNone(record["published"])
-                self.assertNotIn("attacker-controlled-package", notice)
-                self.assertNotIn("attacker-controlled-package", record_text)
-                cached_opener = FakeOpener(AssertionError("fresh rejected cache reached the network"))
-                with patch.object(HOOK_RUNTIME.urllib.request, "build_opener", return_value=cached_opener):
-                    self.assertEqual(
-                        notice,
-                        HOOK_RUNTIME._check_release_update(runtime_config(), cache_path, now=1200),
-                    )
-                self.assertEqual([], cached_opener.requests)
+        self.assertNotEqual(canonical_commit, redirected_commit)
+        self.assertEqual(canonical_commit, observed_commit)
 
     def test_only_session_start_uses_the_installer_owned_update_path(self) -> None:
         for event in (
@@ -367,22 +284,23 @@ class ReleaseUpdateCheckTest(unittest.TestCase):
 
         runtime_config_path = HOOK_RUNTIME.SKILL_ROOT / "config" / "runtime-config.json"
         root = Path("/workspace")
+        cache_path = Path("/runtime/state/skill-update.json")
+        config = {
+            "config_source": "installer_owned_external_runtime",
+            "client": "codex",
+        }
         with (
             patch.object(HOOK_RUNTIME, "_project_root", return_value=root),
-            patch.object(
-                HOOK_RUNTIME,
-                "load_config",
-                return_value={"config_source": "installer_owned_external_runtime"},
-            ),
+            patch.object(HOOK_RUNTIME, "load_config", return_value=config),
             patch.object(HOOK_RUNTIME, "_config_path", return_value=runtime_config_path),
-            patch.object(HOOK_RUNTIME, "_release_update_cache_path", return_value=Path("/runtime/state/release-update.json")),
-            patch.object(HOOK_RUNTIME, "_check_release_update", return_value="Update available.") as check,
+            patch.object(HOOK_RUNTIME, "_skill_update_cache_path", return_value=cache_path),
+            patch.object(HOOK_RUNTIME, "_check_skill_update", return_value="Update available.") as check,
         ):
             self.assertEqual(
                 "Update available.",
                 HOOK_RUNTIME.check_for_skill_update({"hook_event_name": "SessionStart"}),
             )
-        check.assert_called_once()
+        check.assert_called_once_with(config, cache_path)
 
 
 if __name__ == "__main__":

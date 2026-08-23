@@ -13,4 +13,4 @@ Apply to queues, workers, scheduled commands, cron, heartbeats, retries, alerts,
 - Stop or clean up test jobs, schedules, records, and notifications.
 - Record unavailable worker/scheduler/provider infrastructure as a structured limit.
 
-Use job class, queue, schedule, command, monitor, and resulting-data anchors. Never equate dispatch with successful completion.
+Use `file:` for job or command implementations, `config:` for queues and schedules, `route:` or `api:` for monitor surfaces, and `data:` for resulting state. Never equate dispatch with successful completion.

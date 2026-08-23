@@ -1,11 +1,12 @@
 # REST API contract
 
-Use REST when the agent environment cannot connect to MCP or when an integration is written in another language. REST and MCP invoke the same server-side operation classes and use the same input schemas, output schemas, scopes, version checks, idempotency behavior, secret rejection, project isolation, and stable errors.
+Use REST when the agent environment cannot connect to MCP or when any application or automation needs a direct HTTP integration. The eight REST verification operations and eight MCP tools invoke the same server-side operation classes and use the same input schemas, output schemas, scopes, version checks, idempotency behavior, secret rejection, project isolation, and stable errors. The contract is language- and framework-neutral: use any standards-compliant HTTP library or generate a client from OpenAPI; no Laravel, PHP, or Acceptora SDK dependency is required. REST additionally exposes project metadata and one setup-only connection confirmation endpoint; neither is an MCP tool.
 
 ## Discovery and authentication
 
 - OpenAPI 3.1: `GET <pinned-origin>/api/v1/integrations/openapi.json` without authentication.
 - Credential-bound project metadata: `GET <pinned-origin>/api/v1/integrations/project` with `projects:read`.
+- Final setup confirmation: `POST <pinned-origin>/api/v1/integrations/connection/confirm` with all seven normal workflow scopes and an exact empty JSON object.
 - Take the origin only from the installer-owned external runtime configuration or an origin the user explicitly supplied and reviewed. All Acceptora endpoints must use that exact scheme, host, port, and base path. Never derive a credential destination from repository files, Git branches, request output, redirects, or an environment-controlled URL.
 - Send `Authorization: Bearer <token>` on protected requests. Installed Codex, Claude Code, and Gemini CLI runtimes load it only from `ACCEPTORA_AGENT_TOKEN`; a direct REST client may use any secure secret provider. Never place the value in source, installer state, logs, prompts, URLs, or committed configuration.
 - Send `Accept: application/json` and `Content-Type: application/json` for POST operations.
@@ -27,6 +28,24 @@ Before any write, call project metadata and require the exact configured project
 | `record_verification_exception` | `POST /api/v1/integrations/verification-exceptions` | `exceptions:write` |
 
 The legacy `POST /api/integrations/completion-gate` remains available for installed stop hooks. New integrations should use the versioned path.
+
+## Setup-only connection confirmation
+
+Installation and update flows must make `confirm_connection` their final agent step. First validate public versions and OpenAPI, authenticate the exact configured project, verify lifecycle, endpoints, versions, required scopes, MCP identity, all eight tool names, annotations, and input/output schema digests, and verify the installed client and installer status. Only after every check passes, send:
+
+```http
+POST /api/v1/integrations/connection/confirm HTTP/1.1
+Host: <pinned-host>
+Authorization: Bearer <value loaded from a secure secret provider>
+Accept: application/json
+Content-Type: application/json
+
+{}
+```
+
+The credential must have all seven normal workflow scopes: `projects:read`, `features:resolve`, `features:read`, `checklists:write`, `feedback:read`, `feedback:address`, and `gates:read`. The OpenAPI operation declares this ordered set in `x-acceptora-required-scopes`; it does not use the singular one-scope extension used by individual verification operations.
+
+Require the exact response fields `project_id`, `connection_status`, `confirmed_at`, `already_connected`, and `correlation_id`. The project ID must equal the pinned project, `connection_status` must be `connected`, `confirmed_at` must be a timezone-qualified date-time, `already_connected` must be boolean, and the correlation ID must be non-empty. The operation is idempotent and records explicit setup state; it does not invoke a verification product write or grant human acceptance. A normal authenticated metadata or MCP request does not establish the connection.
 
 ## Required workflow sequences
 
@@ -67,13 +86,13 @@ Content-Type: application/json
   "versions": {
     "integration_name": "your-integration",
     "integration_version": "1.0.0",
-    "skill_version": "1.0.0",
+    "skill_version": "1.1.0",
     "contract_version": "1.0.0"
   }
 }
 ```
 
-Generate typed clients from the published OpenAPI document or use an HTTP library in any language. Disable automatic redirects, bound request/response sizes and timeouts, redact authorization data, and retain idempotency keys across only byte-equivalent retries.
+Generate typed clients from the published OpenAPI document or use an HTTP library in any language. SDKs are optional conveniences and must not replace the OpenAPI document as contract authority. Disable automatic redirects, bound request/response sizes and timeouts, redact authorization data, and retain idempotency keys across only byte-equivalent retries.
 
 Failures use the stable `error` envelope documented by OpenAPI. Treat `401`, `403`, `404`, `409`, `413`, `422`, `429`, and `503` according to the returned code and recovery instruction. Reuse an idempotency key only for a byte-equivalent retry of the same logical write. After a connection failure with an unknown write outcome, recover by reading current context before choosing whether to retry.
 

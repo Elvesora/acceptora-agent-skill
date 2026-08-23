@@ -8,12 +8,15 @@ import ipaddress
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from datetime import date
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -70,18 +73,53 @@ def _package_versions() -> tuple[str, str, str]:
     return versions
 
 
+def _client_profiles() -> dict[str, dict[str, Any]]:
+    registry_path = SKILL_ROOT / "config" / "client-profiles.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        reviewed_on = registry["capabilities_reviewed_on"]
+        profiles = registry["clients"]
+        if registry.get("schema_version") != 1:
+            raise ValueError
+        if not isinstance(reviewed_on, str) or date.fromisoformat(reviewed_on).isoformat() != reviewed_on:
+            raise ValueError
+        if not isinstance(profiles, list) or not profiles:
+            raise ValueError
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("the bundled Acceptora client provider registry is invalid") from error
+
+    clients: dict[str, dict[str, Any]] = {}
+    for profile in profiles:
+        try:
+            client = profile["id"]
+            lifecycle = profile["lifecycle"]
+            update_event = lifecycle["update_check_event"]
+        except (KeyError, TypeError) as error:
+            raise RuntimeError("the bundled Acceptora client provider registry is invalid") from error
+        if (
+            not isinstance(client, str)
+            or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", client) is None
+            or client in clients
+            or not isinstance(update_event, str)
+            or not update_event
+        ):
+            raise RuntimeError("the bundled Acceptora client provider registry is invalid")
+        clients[client] = profile
+    return clients
+
+
 SKILL_VERSION, INTEGRATION_VERSION, CONTRACT_VERSION = _package_versions()
+CLIENT_PROFILES = _client_profiles()
 SOURCE_ADAPTER_VERSION = "1.0.0"
 CONFIG_RELATIVE_PATH = Path(".verification/config.json")
 STATE_RELATIVE_PATH = Path(".verification/session-state")
 MAX_GATE_RESPONSE_BYTES = 4 * 1024 * 1024
-MAX_RELEASE_MANIFEST_BYTES = 1024 * 1024
-MAX_RELEASE_FILE_BYTES = 8 * 1024 * 1024
-RELEASE_UPDATE_CACHE_TTL_SECONDS = 300
-RELEASE_UPDATE_CACHE_FILENAME = "release-update.json"
-SHA256_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
-SOURCE_COMMIT_PATTERN = re.compile(r"^[a-f0-9]{40,64}$")
-ARTIFACT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9._+-]+$")
+MAX_GIT_LS_REMOTE_BYTES = 4096
+SKILL_UPDATE_CACHE_TTL_SECONDS = 300
+SKILL_UPDATE_CACHE_FILENAME = "skill-update.json"
+GIT_COMMIT_PATTERN = re.compile(r"^[a-f0-9]{40,64}$")
+CANONICAL_SKILL_REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
+PRODUCTION_SKILL_BRANCH = "main"
 TOKEN_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 ACCEPTORA_TOKEN_PATTERN = re.compile(r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$")
 
@@ -90,11 +128,11 @@ class HookRuntimeError(RuntimeError):
     pass
 
 
-class ReleaseUpdateUnavailable(HookRuntimeError):
+class SkillUpdateUnavailable(HookRuntimeError):
     pass
 
 
-class ReleaseUpdateRejected(HookRuntimeError):
+class SkillUpdateRejected(HookRuntimeError):
     pass
 
 
@@ -209,8 +247,8 @@ def _pending_path(root: Path) -> Path:
     return root / STATE_RELATIVE_PATH / "pending-sync.json"
 
 
-def _release_update_cache_path(root: Path) -> Path:
-    return root / STATE_RELATIVE_PATH / RELEASE_UPDATE_CACHE_FILENAME
+def _skill_update_cache_path(root: Path) -> Path:
+    return root / STATE_RELATIVE_PATH / SKILL_UPDATE_CACHE_FILENAME
 
 
 def _canonical_json_bytes(value: Any) -> bytes:
@@ -226,242 +264,20 @@ def _record_digest(record: dict[str, Any]) -> str:
     return _sha256_bytes(_canonical_json_bytes(payload))
 
 
-def _semantic_version(value: object) -> tuple[tuple[int, int, int], tuple[str, ...] | None]:
-    match = _semantic_version_match(value)
-    if match is None:
-        raise ReleaseUpdateRejected("the published release version is invalid")
-    prerelease = tuple(match.group(4).split(".")) if match.group(4) else None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3))), prerelease
-
-
-def _compare_semantic_versions(left: str, right: str) -> int:
-    left_core, left_prerelease = _semantic_version(left)
-    right_core, right_prerelease = _semantic_version(right)
-    if left_core != right_core:
-        return 1 if left_core > right_core else -1
-    if left_prerelease is None or right_prerelease is None:
-        if left_prerelease is right_prerelease:
-            return 0
-        return 1 if left_prerelease is None else -1
-    for left_identifier, right_identifier in zip(left_prerelease, right_prerelease):
-        if left_identifier == right_identifier:
-            continue
-        left_numeric = left_identifier.isdigit()
-        right_numeric = right_identifier.isdigit()
-        if left_numeric and right_numeric:
-            return 1 if int(left_identifier) > int(right_identifier) else -1
-        if left_numeric != right_numeric:
-            return -1 if left_numeric else 1
-        return 1 if left_identifier > right_identifier else -1
-    if len(left_prerelease) == len(right_prerelease):
-        return 0
-    return 1 if len(left_prerelease) > len(right_prerelease) else -1
-
-
-def _required_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
-        raise ReleaseUpdateRejected(f"the published {label} digest is invalid")
-    return value
-
-
-def _read_bounded_response(response: Any, maximum_bytes: int, label: str) -> bytes:
-    content_length = response.headers.get("Content-Length")
-    if content_length is not None:
-        try:
-            parsed_content_length = int(content_length)
-            if parsed_content_length < 0:
-                raise ReleaseUpdateRejected(f"the published {label} has an invalid Content-Length")
-            if parsed_content_length > maximum_bytes:
-                raise ReleaseUpdateRejected(f"the published {label} exceeds the size limit")
-        except ValueError as error:
-            raise ReleaseUpdateRejected(f"the published {label} has an invalid Content-Length") from error
-    body = response.read(maximum_bytes + 1)
-    if len(body) > maximum_bytes:
-        raise ReleaseUpdateRejected(f"the published {label} exceeds the size limit")
-    return body
-
-
-def _fetch_release_manifest(url: str, timeout_seconds: float) -> tuple[dict[str, Any], str]:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": f"verify-generated-work/{SKILL_VERSION}",
-        },
-        method="GET",
-    )
-    opener = urllib.request.build_opener(_NoRedirect())
-    try:
-        with opener.open(request, timeout=timeout_seconds) as response:
-            if getattr(response, "status", None) != 200:
-                raise ReleaseUpdateRejected("the published release manifest returned an invalid status")
-            content_type = str(response.headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
-            if content_type != "application/json":
-                raise ReleaseUpdateRejected("the published release manifest has an invalid content type")
-            expected_digest = _required_sha256(
-                response.headers.get("X-Acceptora-Artifact-SHA256"),
-                "release manifest",
-            )
-            body = _read_bounded_response(response, MAX_RELEASE_MANIFEST_BYTES, "release manifest")
-    except urllib.error.HTTPError as error:
-        error.close()
-        raise ReleaseUpdateUnavailable("the published release manifest is unavailable") from None
-    except (urllib.error.URLError, TimeoutError):
-        raise ReleaseUpdateUnavailable("the published release manifest is unavailable") from None
-
-    if _sha256_bytes(body) != expected_digest:
-        raise ReleaseUpdateRejected("the published release manifest failed integrity verification")
-    try:
-        manifest = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ReleaseUpdateRejected("the published release manifest is invalid") from error
-    if not isinstance(manifest, dict):
-        raise ReleaseUpdateRejected("the published release manifest is invalid")
-    return manifest, expected_digest
-
-
-def _validated_release_files(manifest: dict[str, Any]) -> str:
-    files = manifest.get("files")
-    if manifest.get("archive_prefix") != "verify-generated-work" or not isinstance(files, list) or not files:
-        raise ReleaseUpdateRejected("the published release manifest has an invalid file inventory")
-
-    expected_fields = {"path", "archive_path", "size", "mode", "sha256"}
-    normalized_files: list[dict[str, Any]] = []
-    seen_paths: set[str] = set()
-    observed_paths: set[str] = set()
-    previous_path: str | None = None
-    for entry in files:
-        if not isinstance(entry, dict) or set(entry) != expected_fields:
-            raise ReleaseUpdateRejected("the published release manifest has an invalid file inventory")
-        path = entry.get("path")
-        archive_path = entry.get("archive_path")
-        size = entry.get("size")
-        mode = entry.get("mode")
-        if not isinstance(path, str) or not path:
-            raise ReleaseUpdateRejected("the published release manifest has an invalid file path")
-        candidate = PurePosixPath(path)
-        if (
-            candidate.is_absolute()
-            or not candidate.parts
-            or candidate.as_posix() != path
-            or any(part in {"", ".", ".."} for part in candidate.parts)
-            or re.match(r"^[A-Za-z]:", path)
-            or "\\" in path
-            or re.search(r"[\x00-\x1f\x7f]", path)
-        ):
-            raise ReleaseUpdateRejected("the published release manifest has an invalid file path")
-        folded_path = path.casefold()
-        if folded_path in seen_paths or (previous_path is not None and path <= previous_path):
-            raise ReleaseUpdateRejected("the published release manifest has a duplicate or unsorted file path")
-        if archive_path != f"verify-generated-work/{path}":
-            raise ReleaseUpdateRejected("the published release manifest has an invalid archive path")
-        if (
-            not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or size > MAX_RELEASE_FILE_BYTES
-            or mode != ("0755" if path.endswith(".py") else "0644")
-        ):
-            raise ReleaseUpdateRejected("the published release manifest has invalid file metadata")
-        digest = _required_sha256(entry.get("sha256"), "release file")
-        seen_paths.add(folded_path)
-        observed_paths.add(path)
-        previous_path = path
-        normalized_files.append(
-            {
-                "path": path,
-                "archive_path": archive_path,
-                "size": size,
-                "mode": mode,
-                "sha256": digest,
-            }
-        )
-
-    required_paths = {"SKILL.md", "config/package-manifest.json", "scripts/install.py"}
-    if not required_paths.issubset(observed_paths):
-        raise ReleaseUpdateRejected("the published release manifest is missing essential package files")
-
-    source_tree_sha256 = _required_sha256(manifest.get("source_tree_sha256"), "source tree")
-    if _sha256_bytes(_canonical_json_bytes(normalized_files)) != source_tree_sha256:
-        raise ReleaseUpdateRejected("the published release manifest has an invalid source-tree digest")
-    return source_tree_sha256
-
-
-def _validated_release(manifest: dict[str, Any], manifest_sha256: str, client: str) -> dict[str, Any]:
-    version = manifest.get("version")
-    _semantic_version(version)
-    source_commit = manifest.get("source_commit")
-    supported_clients = manifest.get("supported_clients")
-    artifacts = manifest.get("artifacts")
-    if (
-        type(manifest.get("schema_version")) is not int
-        or manifest.get("schema_version") != 1
-        or manifest.get("name") != "verify-generated-work"
-        or manifest.get("source_state") != "clean"
-        or not isinstance(source_commit, str)
-        or SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None
-        or not isinstance(supported_clients, list)
-        or any(not isinstance(value, str) for value in supported_clients)
-        or client not in supported_clients
-        or not isinstance(artifacts, list)
-    ):
-        raise ReleaseUpdateRejected("the published release manifest is not an eligible clean release")
-
-    source_tree_sha256 = _validated_release_files(manifest)
-    expected_zip_name = f"verify-generated-work-{version}.zip"
-    artifact_names: set[str] = set()
-    expected_zip: dict[str, Any] | None = None
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            raise ReleaseUpdateRejected("the published release manifest has an invalid artifact")
-        filename = artifact.get("filename")
-        size = artifact.get("size")
-        digest = artifact.get("sha256")
-        artifact_format = artifact.get("format")
-        if (
-            not isinstance(filename, str)
-            or ARTIFACT_FILENAME_PATTERN.fullmatch(filename) is None
-            or filename in artifact_names
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size <= 0
-            or not isinstance(artifact_format, str)
-        ):
-            raise ReleaseUpdateRejected("the published release manifest has an invalid artifact")
-        artifact_names.add(filename)
-        normalized_digest = _required_sha256(digest, "artifact")
-        if filename == expected_zip_name and artifact_format == "zip":
-            expected_zip = {
-                "filename": filename,
-                "format": artifact_format,
-                "size": size,
-                "sha256": normalized_digest,
-            }
-    if expected_zip is None:
-        raise ReleaseUpdateRejected("the published release manifest is missing the expected ZIP artifact")
-
-    return {
-        "version": version,
-        "source_commit": source_commit,
-        "source_tree_sha256": source_tree_sha256,
-        "manifest_sha256": manifest_sha256,
-        "bundle": expected_zip,
-    }
-
-
-def _write_release_update_cache(path: Path, record: dict[str, Any]) -> dict[str, Any]:
+def _write_skill_update_cache(path: Path, record: dict[str, Any]) -> dict[str, Any]:
     complete = {**record, "record_sha256": _record_digest(record)}
     _atomic_json(path, complete)
     return complete
 
 
-def _load_release_update_cache(
+def _load_skill_update_cache(
     path: Path,
     *,
     now: int,
-    manifest_url: str,
-    bundle_url: str,
-    installed_source_tree_sha256: str,
+    repository_url: str,
+    branch: str,
+    installed_commit_sha: str,
+    git_executable: str,
     client: str,
 ) -> dict[str, Any] | None:
     if not path.exists() or path.is_symlink() or not path.is_file():
@@ -475,187 +291,203 @@ def _load_release_update_cache(
     checked_at = record.get("checked_at_unix")
     if (
         record.get("schema_version") != 1
-        or record.get("kind") != "acceptora_release_update_check"
+        or record.get("kind") != "acceptora_git_main_update_check"
         or not isinstance(checked_at, int)
         or isinstance(checked_at, bool)
         or checked_at > now
-        or now - checked_at > RELEASE_UPDATE_CACHE_TTL_SECONDS
-        or record.get("release_manifest_url") != manifest_url
-        or record.get("release_bundle_url") != bundle_url
+        or now - checked_at > SKILL_UPDATE_CACHE_TTL_SECONDS
+        or record.get("repository_url") != repository_url
+        or record.get("branch") != branch
+        or record.get("git_executable") != git_executable
         or record.get("client") != client
-        or record.get("installed_version") != SKILL_VERSION
-        or record.get("installed_source_tree_sha256") != installed_source_tree_sha256
+        or record.get("installed_commit_sha") != installed_commit_sha
         or record.get("setup_mutations_performed") != 0
         or record.get("cache_written") is not True
         or record.get("auto_apply") is not False
     ):
         return None
     status = record.get("status")
-    published = record.get("published")
+    current_commit_sha = record.get("current_commit_sha")
     if status in {"unavailable", "rejected"}:
-        return record if published is None else None
-    if status not in {"current", "update_available", "identity_conflict", "published_older"}:
+        return record if current_commit_sha is None else None
+    if status not in {"current", "update_available"}:
         return None
-    if not isinstance(published, dict):
+    if not isinstance(current_commit_sha, str) or GIT_COMMIT_PATTERN.fullmatch(current_commit_sha) is None:
         return None
-    bundle = published.get("bundle")
-    try:
-        published_version = published.get("version")
-        _semantic_version(published_version)
-        published_source_tree = _required_sha256(published.get("source_tree_sha256"), "source tree")
-        _required_sha256(published.get("manifest_sha256"), "release manifest")
-        source_commit = published.get("source_commit")
-        if not isinstance(source_commit, str) or SOURCE_COMMIT_PATTERN.fullmatch(source_commit) is None:
-            return None
-        if not isinstance(bundle, dict):
-            return None
-        bundle_filename = bundle.get("filename")
-        bundle_size = bundle.get("size")
-        if (
-            bundle_filename != f"verify-generated-work-{published_version}.zip"
-            or bundle.get("format") != "zip"
-            or bundle.get("download_url") != bundle_url
-            or not isinstance(bundle_size, int)
-            or isinstance(bundle_size, bool)
-            or bundle_size <= 0
-        ):
-            return None
-        _required_sha256(bundle.get("sha256"), "artifact")
-        comparison = _compare_semantic_versions(str(published_version), SKILL_VERSION)
-    except ReleaseUpdateRejected:
-        return None
-    expected_status = (
-        "update_available"
-        if comparison > 0
-        else "published_older"
-        if comparison < 0
-        else "identity_conflict"
-        if published_source_tree != installed_source_tree_sha256
-        else "current"
-    )
+    expected_status = "current" if current_commit_sha == installed_commit_sha else "update_available"
     if status != expected_status:
         return None
     return record
 
 
-def _release_update_message(record: dict[str, Any], cache_path: Path) -> str | None:
+def _skill_update_message(record: dict[str, Any], cache_path: Path) -> str | None:
     status = record.get("status")
     if status in {"current", "unavailable"}:
         return None
     if status == "rejected":
         return (
-            "Agent Verification update check warning: published release metadata failed integrity checks; "
-            "no update was downloaded and no setup files were changed."
+            "Agent Verification update check warning: the production branch response was invalid; "
+            "no skill source was fetched and no setup files were changed."
         )
-    published = record.get("published")
-    if not isinstance(published, dict):
-        return "Agent Verification update check warning: published release identity could not be verified; no setup files were changed."
-    bundle = published.get("bundle")
-    if not isinstance(bundle, dict):
-        return "Agent Verification update check warning: published release identity could not be verified; no setup files were changed."
-    identity = (
-        f"manifest {published.get('manifest_sha256')}; ZIP {bundle.get('sha256')} "
-        f"({bundle.get('size')} bytes); source commit {published.get('source_commit')}"
-    )
-    review = f"Review {cache_path} (record {record.get('record_sha256')})."
-    if status == "update_available":
-        return (
-            f"Acceptora Agent Skill update available: {record.get('installed_version')} -> {published.get('version')}. "
-            f"Verified release metadata: {identity}. {review} No bundle was downloaded and no setup files were changed. "
-            "Use the pinned URLs in that record to verify and download the new bundle, then follow the new bundle's "
-            "root SETUP.md: accept rollback with the old trusted installer before creating a fresh accepted plan with the new installer."
-        )
-    if status == "identity_conflict":
-        return (
-            f"Agent Verification update check warning: published version {published.get('version')} reused a different "
-            f"release identity ({identity}). {review} No update was downloaded or applied."
-        )
+    installed_commit = str(record.get("installed_commit_sha"))
+    current_commit = str(record.get("current_commit_sha"))
     return (
-        f"Agent Verification update check warning: published version {published.get('version')} is older than installed "
-        f"version {record.get('installed_version')} ({identity}). {review} No update was downloaded or applied."
+        f"Acceptora Agent Skill update available: installed commit {installed_commit[:12]}, "
+        f"production main commit {current_commit[:12]}. Ask your coding agent to clone a fresh main checkout from "
+        f"{record.get('repository_url')} outside the target repository, read SETUP.md completely from that checkout, "
+        'and follow its "Coding-agent install or update" procedure for an update. The printed cache path identifies '
+        "the installed runtime needed by that procedure. "
+        f"Review {cache_path} (record {record.get('record_sha256')}). No source was fetched and no update was applied."
     )
 
 
-def _check_release_update(
+def _skill_update_environment() -> dict[str, str]:
+    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    for key in ("ACCEPTORA_AGENT_TOKEN", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"):
+        environment.pop(key, None)
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+        }
+    )
+    return environment
+
+
+def _remote_main_commit(
+    git_executable: str,
+    repository_url: str,
+    branch: str,
+    timeout_seconds: float,
+) -> str:
+    reference = f"refs/heads/{branch}"
+    command = [
+        git_executable,
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.askPass=",
+        "-c",
+        "http.followRedirects=false",
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        repository_url,
+        reference,
+    ]
+    try:
+        with tempfile.TemporaryDirectory(prefix="acceptora-skill-update-") as isolated_worktree:
+            environment = _skill_update_environment()
+            environment["GIT_CEILING_DIRECTORIES"] = str(Path(isolated_worktree).resolve())
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout_seconds,
+                env=environment,
+                cwd=isolated_worktree,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SkillUpdateUnavailable("the production branch is unavailable") from error
+    if process.returncode != 0:
+        raise SkillUpdateUnavailable("the production branch is unavailable")
+    if len(process.stdout) > MAX_GIT_LS_REMOTE_BYTES or len(process.stderr) > MAX_GIT_LS_REMOTE_BYTES:
+        raise SkillUpdateRejected("the production branch response is too large")
+    try:
+        output = process.stdout.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        raise SkillUpdateRejected("the production branch response is invalid") from error
+    lines = output.splitlines()
+    if len(lines) != 1:
+        raise SkillUpdateRejected("the production branch response is invalid")
+    commit_sha, separator, observed_reference = lines[0].partition("\t")
+    commit_sha = commit_sha.lower()
+    if separator != "\t" or observed_reference != reference or GIT_COMMIT_PATTERN.fullmatch(commit_sha) is None:
+        raise SkillUpdateRejected("the production branch response is invalid")
+    return commit_sha
+
+
+def _check_skill_update(
     config: dict[str, Any],
     cache_path: Path,
     *,
     now: int | None = None,
 ) -> str | None:
     checked_at = int(time.time()) if now is None else now
-    manifest_url = _validate_endpoint(config.get("release_manifest_url"), "release_manifest_url")
-    bundle_url = _validate_endpoint(config.get("release_bundle_url"), "release_bundle_url")
-    manifest_origin = urlsplit(manifest_url)
-    bundle_origin = urlsplit(bundle_url)
-    if (manifest_origin.scheme, manifest_origin.netloc) != (bundle_origin.scheme, bundle_origin.netloc):
-        raise ReleaseUpdateRejected("the pinned release endpoints do not share one origin")
-    installed_source_tree_sha256 = _required_sha256(
-        config.get("installed_source_tree_sha256"),
-        "installed source tree",
-    )
+    repository_url = config.get("skill_repository_url")
+    branch = config.get("skill_repository_branch")
+    installed_commit_sha = config.get("installed_commit_sha")
+    git_executable = config.get("git_executable")
+    if repository_url != CANONICAL_SKILL_REPOSITORY_URL or branch != PRODUCTION_SKILL_BRANCH:
+        raise SkillUpdateRejected("the installed production source is invalid")
+    if not isinstance(installed_commit_sha, str) or GIT_COMMIT_PATTERN.fullmatch(installed_commit_sha) is None:
+        raise SkillUpdateRejected("the installed commit is invalid")
+    if not isinstance(git_executable, str) or not Path(git_executable).is_absolute():
+        raise SkillUpdateRejected("the installed Git executable is invalid")
     client = config.get("client")
-    if client not in {"codex", "claude-code", "gemini-cli"}:
-        raise ReleaseUpdateRejected("the installed client identity is invalid")
-    timeout_seconds = max(0.5, min(float(config.get("release_update_timeout_seconds", 3)), 5.0))
-    cached = _load_release_update_cache(
+    if client not in CLIENT_PROFILES:
+        raise SkillUpdateRejected("the installed client identity is invalid")
+    timeout_seconds = max(0.5, min(float(config.get("skill_update_timeout_seconds", 3)), 5.0))
+    cached = _load_skill_update_cache(
         cache_path,
         now=checked_at,
-        manifest_url=manifest_url,
-        bundle_url=bundle_url,
-        installed_source_tree_sha256=installed_source_tree_sha256,
+        repository_url=repository_url,
+        branch=branch,
+        installed_commit_sha=installed_commit_sha,
+        git_executable=git_executable,
         client=client,
     )
     if cached is not None:
-        return _release_update_message(cached, cache_path)
+        return _skill_update_message(cached, cache_path)
 
-    def cache_result(status: str, published: dict[str, Any] | None) -> str | None:
-        record = _write_release_update_cache(
+    def cache_result(status: str, current_commit_sha: str | None) -> str | None:
+        record = _write_skill_update_cache(
             cache_path,
             {
                 "schema_version": 1,
-                "kind": "acceptora_release_update_check",
+                "kind": "acceptora_git_main_update_check",
                 "checked_at_unix": checked_at,
-                "release_manifest_url": manifest_url,
-                "release_bundle_url": bundle_url,
+                "repository_url": repository_url,
+                "branch": branch,
+                "git_executable": git_executable,
                 "client": client,
-                "installed_version": SKILL_VERSION,
-                "installed_source_tree_sha256": installed_source_tree_sha256,
+                "installed_commit_sha": installed_commit_sha,
                 "status": status,
-                "published": published,
+                "current_commit_sha": current_commit_sha,
                 "setup_mutations_performed": 0,
                 "cache_written": True,
                 "auto_apply": False,
             },
         )
-        return _release_update_message(record, cache_path)
+        return _skill_update_message(record, cache_path)
 
     try:
-        manifest, manifest_sha256 = _fetch_release_manifest(manifest_url, timeout_seconds)
-        published = _validated_release(manifest, manifest_sha256, client)
-    except ReleaseUpdateUnavailable:
+        current_commit_sha = _remote_main_commit(git_executable, repository_url, branch, timeout_seconds)
+    except SkillUpdateUnavailable:
         return cache_result("unavailable", None)
-    except ReleaseUpdateRejected:
+    except SkillUpdateRejected:
         return cache_result("rejected", None)
-
-    published["bundle"] = {**published["bundle"], "download_url": bundle_url}
-    comparison = _compare_semantic_versions(str(published["version"]), SKILL_VERSION)
-    if comparison > 0:
-        status = "update_available"
-    elif comparison < 0:
-        status = "published_older"
-    elif published["source_tree_sha256"] != installed_source_tree_sha256:
-        status = "identity_conflict"
-    else:
-        status = "current"
-    return cache_result(status, published)
+    status = "current" if current_commit_sha == installed_commit_sha else "update_available"
+    return cache_result(status, current_commit_sha)
 
 
 def check_for_skill_update(event: dict[str, Any]) -> str | None:
     event_name = str(event.get("hook_event_name") or event.get("event_name") or "")
-    if event_name != "SessionStart":
+    if event_name not in {
+        profile["lifecycle"]["update_check_event"]
+        for profile in CLIENT_PROFILES.values()
+    }:
         return None
     root = _project_root(event)
     config = load_config(root)
+    client = config.get("client")
+    profile = CLIENT_PROFILES.get(client) if isinstance(client, str) else None
+    if profile is None or event_name != profile["lifecycle"]["update_check_event"]:
+        return None
     expected_config_path = (SKILL_ROOT / "config" / "runtime-config.json").resolve()
     if (
         config.get("config_source") != "installer_owned_external_runtime"
@@ -663,16 +495,16 @@ def check_for_skill_update(event: dict[str, Any]) -> str | None:
     ):
         return None
     try:
-        return _check_release_update(config, _release_update_cache_path(root))
-    except ReleaseUpdateRejected:
+        return _check_skill_update(config, _skill_update_cache_path(root))
+    except SkillUpdateRejected:
         return (
-            "Agent Verification update check warning: published release metadata failed integrity checks; "
-            "no update was downloaded and no setup files were changed."
+            "Agent Verification update check warning: the installed Git update configuration is invalid; "
+            "no skill source was fetched and no setup files were changed."
         )
     except (OSError, TypeError, ValueError):
         return (
-            "Agent Verification update check warning: the release check failed safely; "
-            "no update was downloaded and no setup files were changed."
+            "Agent Verification update check warning: the Git check failed safely; "
+            "no skill source was fetched and no setup files were changed."
         )
 
 

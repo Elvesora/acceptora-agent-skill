@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify versions and the authenticated MCP contract without product write-tool calls."""
+"""Verify the authenticated contract and optionally confirm setup as the final step."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import ssl
 import stat
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -41,13 +42,53 @@ REST_OPERATION_PATHS = {
     "record_verification_exception": "/api/v1/integrations/verification-exceptions",
 }
 PROJECT_METADATA_PATH = "/api/v1/integrations/project"
+CONNECTION_CONFIRMATION_PATH = "/api/v1/integrations/connection/confirm"
 LEGACY_COMPLETION_GATE_PATH = "/api/integrations/completion-gate"
+REQUIRED_WORKFLOW_SCOPES = [
+    "projects:read",
+    "features:resolve",
+    "features:read",
+    "checklists:write",
+    "feedback:read",
+    "feedback:address",
+    "gates:read",
+]
+CONNECTION_CONFIRMATION_REQUEST_SCHEMA = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+CONNECTION_CONFIRMATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "project_id",
+        "connection_status",
+        "confirmed_at",
+        "already_connected",
+        "correlation_id",
+    ],
+    "properties": {
+        "project_id": {"type": "string", "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"},
+        "connection_status": {"type": "string", "const": "connected"},
+        "confirmed_at": {"type": "string", "format": "date-time"},
+        "already_connected": {"type": "boolean"},
+        "correlation_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    },
+}
 
 
 class HealthFailure(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        setup_state_write_may_have_occurred: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.setup_state_write_may_have_occurred = setup_state_write_may_have_occurred
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -82,7 +123,7 @@ class Settings:
 
 
 class Transport:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, skill_version: str | None = None) -> None:
         context = ssl.create_default_context(cafile=settings.tls_ca_file)
         self.opener = build_opener(_NoRedirect(), HTTPSHandler(context=context))
         self.loopback_opener = build_opener(
@@ -91,6 +132,8 @@ class Transport:
             HTTPSHandler(context=context),
         )
         self.timeout_seconds = settings.timeout_seconds
+        selected_skill_version = skill_version or str(load_manifest()["skill"]["version"])
+        self.user_agent = f"verify-generated-work-health/{selected_skill_version}"
 
     def request(
         self,
@@ -105,7 +148,7 @@ class Transport:
     ) -> tuple[dict[str, Any] | None, Any]:
         request_headers = {
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "verify-generated-work-health/1.0.0",
+            "User-Agent": self.user_agent,
             **(headers or {}),
         }
         body = None
@@ -388,7 +431,12 @@ def _validate_openapi(
         raise HealthFailure("REST_ORIGIN_DRIFT", "The OpenAPI document must use the reviewed relative server root.")
 
     paths = document.get("paths")
-    expected_paths = {*REST_OPERATION_PATHS.values(), PROJECT_METADATA_PATH, LEGACY_COMPLETION_GATE_PATH}
+    expected_paths = {
+        *REST_OPERATION_PATHS.values(),
+        PROJECT_METADATA_PATH,
+        CONNECTION_CONFIRMATION_PATH,
+        LEGACY_COMPLETION_GATE_PATH,
+    }
     if not isinstance(paths, dict) or set(paths) != expected_paths:
         raise HealthFailure("REST_OPERATION_DRIFT", "The OpenAPI document does not expose the exact reviewed REST path set.")
     expected_tools = {tool["name"]: tool for tool in manifest["tools"]}
@@ -421,6 +469,27 @@ def _validate_openapi(
         or project_operation.get("security") != [{"agentBearer": []}]
     ):
         raise HealthFailure("REST_OPERATION_DRIFT", "The REST project metadata operation drifted.")
+
+    confirmation_item = paths.get(CONNECTION_CONFIRMATION_PATH)
+    confirmation_operation = (
+        confirmation_item.get("post")
+        if isinstance(confirmation_item, dict) and set(confirmation_item) == {"post"}
+        else None
+    )
+    if (
+        not isinstance(confirmation_operation, dict)
+        or confirmation_operation.get("operationId") != "confirm_connection"
+        or confirmation_operation.get("x-acceptora-required-scopes") != REQUIRED_WORKFLOW_SCOPES
+        or confirmation_operation.get("security") != [{"agentBearer": []}]
+    ):
+        raise HealthFailure("REST_OPERATION_DRIFT", "The REST setup confirmation operation drifted.")
+    confirmation_request_schema = _openapi_operation_schema(confirmation_operation, document, "input")
+    if confirmation_request_schema != CONNECTION_CONFIRMATION_REQUEST_SCHEMA:
+        raise HealthFailure("REST_SCHEMA_DRIFT", "The setup confirmation request schema drifted.")
+    confirmation_response_schema = _openapi_operation_schema(confirmation_operation, document, "output")
+    if confirmation_response_schema != CONNECTION_CONFIRMATION_RESPONSE_SCHEMA:
+        raise HealthFailure("REST_SCHEMA_DRIFT", "The setup confirmation response schema drifted.")
+
     legacy_item = paths.get(LEGACY_COMPLETION_GATE_PATH)
     legacy_operation = legacy_item.get("post") if isinstance(legacy_item, dict) and set(legacy_item) == {"post"} else None
     if (
@@ -432,9 +501,44 @@ def _validate_openapi(
         raise HealthFailure("REST_OPERATION_DRIFT", "The legacy completion-gate compatibility operation drifted.")
 
 
-def run_health(settings: Settings, manifest: dict[str, Any]) -> dict[str, Any]:
+def _validate_connection_confirmation(response: dict[str, Any] | None, expected_project_id: str) -> dict[str, Any]:
+    expected_fields = {
+        "project_id",
+        "connection_status",
+        "confirmed_at",
+        "already_connected",
+        "correlation_id",
+    }
+    if not isinstance(response, dict) or set(response) != expected_fields:
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation response fields drifted.")
+    if response.get("project_id") != expected_project_id or response.get("connection_status") != "connected":
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation did not confirm the pinned project.")
+    if not isinstance(response.get("already_connected"), bool):
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation idempotency state is invalid.")
+    correlation_id = response.get("correlation_id")
+    if not isinstance(correlation_id, str) or not 1 <= len(correlation_id) <= 255:
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation correlation ID is invalid.")
+    confirmed_at = response.get("confirmed_at")
+    if not isinstance(confirmed_at, str) or "T" not in confirmed_at:
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation timestamp is invalid.")
+    try:
+        timestamp_value = confirmed_at.removesuffix("Z") + ("+00:00" if confirmed_at.endswith("Z") else "")
+        parsed_timestamp = datetime.fromisoformat(timestamp_value)
+    except ValueError:
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation timestamp is invalid.") from None
+    if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() is None:
+        raise HealthFailure("CONNECTION_CONFIRMATION_DRIFT", "The setup confirmation timestamp must include a timezone.")
+    return response
+
+
+def run_health(
+    settings: Settings,
+    manifest: dict[str, Any],
+    *,
+    confirm_connection: bool = False,
+) -> dict[str, Any]:
     checks: list[dict[str, str]] = []
-    transport = Transport(settings)
+    transport = Transport(settings, str(manifest["skill"]["version"]))
 
     version_response, _ = transport.request(settings.contract_version_url, method="GET")
     if not isinstance(version_response, dict) or not isinstance(version_response.get("data"), dict):
@@ -475,15 +579,7 @@ def run_health(settings: Settings, manifest: dict[str, Any]) -> dict[str, Any]:
     scopes = project_response.get("granted_scopes")
     if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes):
         raise HealthFailure("PROJECT_SCOPE_INVALID", "The authenticated project metadata omitted granted scopes.")
-    mandatory_scopes = {
-        "projects:read",
-        "features:resolve",
-        "features:read",
-        "checklists:write",
-        "feedback:read",
-        "feedback:address",
-        "gates:read",
-    }
+    mandatory_scopes = set(REQUIRED_WORKFLOW_SCOPES)
     missing_scopes = sorted(mandatory_scopes.difference(scopes))
     if missing_scopes:
         raise HealthFailure("PROJECT_SCOPE_MISSING", "The bearer token lacks mandatory verification workflow scopes.")
@@ -598,11 +694,44 @@ def run_health(settings: Settings, manifest: dict[str, Any]) -> dict[str, Any]:
             raise HealthFailure("MCP_ANNOTATION_DRIFT", "An MCP tool annotation map does not match the v1 package contract.")
     checks.append({"name": "mcp_tools", "status": "pass", "detail": "Exactly eight tool names and all input/output schema digests match."})
 
+    confirmation: dict[str, Any] = {"requested": confirm_connection, "status": "not_requested"}
+    if confirm_connection:
+        try:
+            confirmation_response, _ = transport.request(
+                f"{settings.rest_base_url}/connection/confirm",
+                method="POST",
+                token=settings.token,
+                payload={},
+            )
+            validated_confirmation = _validate_connection_confirmation(confirmation_response, settings.project_id)
+        except HealthFailure as exc:
+            raise HealthFailure(
+                exc.code,
+                str(exc),
+                setup_state_write_may_have_occurred=True,
+            ) from None
+        confirmation = {
+            "requested": True,
+            "status": "confirmed",
+            "project_id": validated_confirmation["project_id"],
+            "connection_status": validated_confirmation["connection_status"],
+            "confirmed_at": validated_confirmation["confirmed_at"],
+            "already_connected": validated_confirmation["already_connected"],
+            "correlation_id": validated_confirmation["correlation_id"],
+        }
+        checks.append({
+            "name": "connection_confirmation",
+            "status": "pass",
+            "detail": "The server explicitly marked setup connected after every compatibility check passed.",
+        })
+
     return {
         "ok": True,
-        "operation_mode": "read_only_contract_probe",
+        "operation_mode": "setup_connection_confirmation" if confirm_connection else "read_only_contract_probe",
         "product_write_tools_called": False,
+        "setup_state_write_performed": confirm_connection,
         "authentication_telemetry_may_update": True,
+        "connection_confirmation": confirmation,
         "checks": checks,
         "warnings": optional_warnings,
         "versions": expected_versions,
@@ -617,14 +746,18 @@ def run_health(settings: Settings, manifest: dict[str, Any]) -> dict[str, Any]:
             "environment_variable": settings.token_env,
             "value_exposed": False,
         },
-        "message": "Health check passed: versions, authenticated MCP initialization, and exact tool schemas match.",
+        "message": (
+            "Setup confirmed: every health check passed and the pinned project connection is established."
+            if confirm_connection
+            else "Health check passed without marking the project connected."
+        ),
     }
 
 
 def _text_output(result: dict[str, Any]) -> str:
     if not result.get("ok"):
         return f"Health check failed [{result['error']['code']}]: {result['error']['message']}\n"
-    lines = ["Health check passed (no product write tools called; normal authentication telemetry may update)."]
+    lines = [result["message"] + " (No product write tools called; credential-use telemetry may update.)"]
     for check in result["checks"]:
         lines.append(f"- {check['name']}: {check['detail']}")
     for warning in result.get("warnings", []):
@@ -637,16 +770,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", help="Explicit external config; requires --accept-config-sha256.")
     parser.add_argument("--accept-config-sha256")
+    parser.add_argument(
+        "--confirm-connection",
+        action="store_true",
+        help="After every health check passes, explicitly mark the pinned project connection as established.",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     token = ""
+    confirmation_requested = False
     try:
         if sys.version_info < (3, 11):
             raise HealthFailure("PYTHON_UNSUPPORTED", "verify-generated-work requires Python 3.11 or newer.")
         args = parse_args(argv)
+        confirmation_requested = args.confirm_connection
         if args.config:
             requested_config = Path(args.config).expanduser().absolute()
             if requested_config.is_symlink() or not requested_config.is_file():
@@ -663,23 +803,37 @@ def main(argv: list[str] | None = None) -> int:
             config_body = _stable_read(config_path)
         settings = load_settings(config_path, config_body)
         token = settings.token
-        result = run_health(settings, load_manifest())
+        result = run_health(settings, load_manifest(), confirm_connection=confirmation_requested)
         exit_code = 0
     except HealthFailure as exc:
         result = {
             "ok": False,
-            "operation_mode": "read_only_contract_probe",
+            "operation_mode": "setup_connection_confirmation" if confirmation_requested else "read_only_contract_probe",
             "product_write_tools_called": False,
+            "setup_state_write_performed": None if exc.setup_state_write_may_have_occurred else False,
             "authentication_telemetry_may_update": True,
+            "connection_confirmation": {
+                "requested": confirmation_requested,
+                "status": (
+                    "unknown"
+                    if exc.setup_state_write_may_have_occurred
+                    else ("not_performed" if confirmation_requested else "not_requested")
+                ),
+            },
             "error": {"code": exc.code, "message": str(exc)},
         }
         exit_code = 1
     except Exception:
         result = {
             "ok": False,
-            "operation_mode": "read_only_contract_probe",
+            "operation_mode": "setup_connection_confirmation" if confirmation_requested else "read_only_contract_probe",
             "product_write_tools_called": False,
+            "setup_state_write_performed": None if confirmation_requested else False,
             "authentication_telemetry_may_update": True,
+            "connection_confirmation": {
+                "requested": confirmation_requested,
+                "status": "unknown" if confirmation_requested else "not_requested",
+            },
             "error": {
                 "code": "HEALTH_CHECK_FAILED",
                 "message": "The compatibility health check could not complete safely.",

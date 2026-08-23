@@ -1,8 +1,12 @@
 {
   "schema_version": 1,
+  "distribution": {
+    "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+    "branch": "main"
+  },
   "skill": {
     "name": "verify-generated-work",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "integration": {
     "name": "verify-generated-work",
@@ -15,19 +19,6 @@
   "server": {
     "name": "Acceptora Verification",
     "version": "1.0.0"
-  },
-  "supported_clients": [
-    "codex",
-    "claude-code",
-    "gemini-cli"
-  ],
-  "reference_client_builds": {
-    "codex": "codex-cli 0.147.0",
-    "claude-code": "2.1.114",
-    "gemini-cli": "0.24.5"
-  },
-  "minimum_client_builds": {
-    "codex": "codex-cli 0.144.0"
   },
   "transports": {
     "mcp": "/mcp",
@@ -53,7 +44,7 @@
       "name": "reconcile_checklist",
       "required_scope": "checklists:write",
       "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:be62a51b831320fda2e7f784c43d388121d2c9dfd340e88eb975312cb04e0357",
+      "input_schema_sha256": "sha256:fad439c2d391b76f47414c01835db883c60fee67358b85c5e83ea7bd7688011b",
       "output_schema_sha256": "sha256:5251c962bfe3bfaa99b445dc54c11e5c24182219d55cb83434c34e2d42f3b39b"
     },
     {
@@ -88,7 +79,7 @@
       "name": "record_verification_exception",
       "required_scope": "exceptions:write",
       "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:6c96928e2df39272b60b37dda9f3bdfd904077202be1db7b9daa8934b646fd96",
+      "input_schema_sha256": "sha256:6ea5ca31f5231846a60301a12d5c32501f3ce82d0a7f10a87ac52701f6b5869d",
       "output_schema_sha256": "sha256:81b5c4dfc43c9bee8212cec2f9cfa1865bba60d4bc80b7c960ffc33d7b2edecd"
     }
   ]

@@ -14,4 +14,4 @@ Apply to endpoints, payloads, schemas, clients, public methods, serialization, o
 - Compare implementation, generated schema, examples, and public documentation.
 - Avoid live production calls unless explicitly optional and safely credentialed.
 
-Use `api:*`, file, contract, and public-symbol anchors. Never include real tokens in commands or payload examples.
+Use `api:` for endpoint or operation contracts, `file:` for schemas and client implementations, and `global:` for compatibility spanning several surfaces. Never include real tokens in commands or payload examples.

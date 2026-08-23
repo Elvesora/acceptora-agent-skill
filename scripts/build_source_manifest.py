@@ -30,16 +30,6 @@ GIT_COMMAND_TIMEOUT_SECONDS = 15
 DEFAULT_IGNORES = (
     ".git/**",
     ".verification/**",
-    "vendor/**",
-    "node_modules/**",
-    "storage/logs/**",
-    "storage/framework/cache/**",
-    "storage/framework/sessions/**",
-    "storage/framework/views/**",
-    "bootstrap/cache/**",
-    "public/build/**",
-    "dist/**",
-    "build/**",
 )
 
 
@@ -313,33 +303,21 @@ def _untracked_paths(root: Path) -> set[str]:
     return paths
 
 
-def _assert_no_unsupported_filesystem_entries(root: Path, ignores: tuple[str, ...]) -> None:
-    pending = [root]
-    while pending:
-        directory = pending.pop()
+def _assert_eligible_path_ancestors(root: Path, relative: str) -> None:
+    current = root
+    for part in Path(relative).parts[:-1]:
+        current /= part
         try:
-            with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return
         except OSError as error:
-            raise ManifestError(f"source directory could not be inspected safely: {directory}") from error
-
-        for directory_entry in entries:
-            path = Path(directory_entry.path)
-            relative = _decode_git_path(os.fsencode(path.relative_to(root).as_posix()))
-            if _is_ignored(relative, ignores):
-                continue
-            try:
-                metadata = directory_entry.stat(follow_symlinks=False)
-            except OSError as error:
-                raise ManifestError(f"source path could not be inspected safely: {path}") from error
-            if stat.S_ISDIR(metadata.st_mode):
-                if _is_junction(path):
-                    raise ManifestError(f"source path is a junction and cannot be captured safely: {path}")
-                pending.append(path)
-                continue
-            if stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                continue
-            raise ManifestError(f"source path is not a regular file or symlink: {path}")
+            raise ManifestError(f"source path ancestor could not be inspected safely: {current}") from error
+        if stat.S_ISLNK(metadata.st_mode) or _is_junction(current):
+            raise ManifestError(f"source path ancestor is a symlink or junction: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ManifestError(f"source path ancestor is not a directory: {current}")
+        _assert_contained(current, root)
 
 
 def _working_git_mode(path: Path, entry: dict[str, Any], index_mode: str | None) -> str | None:
@@ -384,7 +362,6 @@ def _capture_git(root: Path, ignores: tuple[str, ...]) -> dict[str, Any]:
     remote_process = _run_git(root, "config", "--get", "remote.origin.url", check=False)
     remote = _sanitise_remote(remote_process.stdout.decode("utf-8", errors="replace"))
     repository = remote or f"local:{root.name}"
-    _assert_no_unsupported_filesystem_entries(root, ignores)
     _assert_no_hidden_index_entries(root)
     tracked = _tracked_index_entries(root)
     untracked = _untracked_paths(root)
@@ -396,6 +373,7 @@ def _capture_git(root: Path, ignores: tuple[str, ...]) -> dict[str, Any]:
         if index_entry is None and _is_ignored(relative, ignores):
             continue
         path = root / Path(relative)
+        _assert_eligible_path_ancestors(root, relative)
         entry = _working_entry(root, relative)
         index_mode = index_entry["mode"] if index_entry is not None else None
         if index_entry is None and entry["kind"] == "directory":

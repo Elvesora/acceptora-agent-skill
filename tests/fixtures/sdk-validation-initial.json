@@ -56,8 +56,22 @@
         "target": "tests/ValidationResultContractTest.php",
         "executed_at": "2026-07-15T09:00:00Z",
         "outcome": "passed",
+        "evidence_sufficiency": "sufficient",
         "exit_status": 0,
         "summary": "The synthetic fixture reports three passing contract assertions.",
+        "source_revision": "fixture-initial"
+      },
+      {
+        "semantic_key": "baseline.authenticated_consumer_smoke",
+        "kind": "browser",
+        "name": "Optional authenticated consumer smoke fixture",
+        "target": "https://sdk-fixture.example.invalid/account",
+        "executed_at": "2026-07-15T09:00:30Z",
+        "outcome": "not_run",
+        "evidence_sufficiency": "insufficient",
+        "blocker_reason": "missing_credentials",
+        "exit_status": null,
+        "summary": "The optional authenticated smoke check was not run because the synthetic fixture intentionally provides no credential.",
         "source_revision": "fixture-initial"
       }
     ],
@@ -178,7 +192,7 @@
     "versions": {
       "integration_name": "acceptora-fixture-client",
       "integration_version": "1.0.0",
-      "skill_version": "1.0.0",
+      "skill_version": "1.1.0",
       "contract_version": "1.0.0"
     },
     "idempotency_key": "00000000-0000-4000-8000-000000000001"

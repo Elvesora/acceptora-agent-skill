@@ -12,16 +12,51 @@ import sys
 import tempfile
 import tomllib
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 from typing import Any, Callable
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-INSTALLER = SKILL_ROOT / "scripts" / "install.py"
 PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 API_BASE_URL = "https://acceptora.example"
 _RUNTIME_HOLDER: tempfile.TemporaryDirectory[str] | None = None
+_SOURCE_HOLDER: tempfile.TemporaryDirectory[str] | None = None
+
+
+def _test_installer_path() -> Path:
+    global _SOURCE_HOLDER
+    if _SOURCE_HOLDER is None:
+        _SOURCE_HOLDER = tempfile.TemporaryDirectory(prefix="acceptora-agent-skill-source-")
+        source_root = Path(_SOURCE_HOLDER.name) / "acceptora-agent-skill"
+        shutil.copytree(
+            SKILL_ROOT,
+            source_root,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "dist", "*.pyc", "*.pyo"),
+        )
+        git_executable = shutil.which("git")
+        if git_executable is None:
+            raise AssertionError("Git is required by installer tests")
+        commands = (
+            ("init", "--initial-branch=main"),
+            ("config", "core.autocrlf", "false"),
+            ("config", "user.name", "Acceptora Test"),
+            ("config", "user.email", "acceptora-test@example.invalid"),
+            ("add", "--all"),
+            ("commit", "-m", "Test production source"),
+            ("remote", "add", "origin", "https://github.com/Elvesora/acceptora-agent-skill"),
+        )
+        for arguments in commands:
+            result = subprocess.run(
+                [str(Path(git_executable).resolve()), "-C", str(source_root), *arguments],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise AssertionError(result.stderr)
+    return Path(_SOURCE_HOLDER.name) / "acceptora-agent-skill" / "scripts" / "install.py"
 
 
 def _test_runtime_parent() -> Path:
@@ -38,10 +73,13 @@ def _test_runtime_parent() -> Path:
 
 
 def tearDownModule() -> None:
-    global _RUNTIME_HOLDER
+    global _RUNTIME_HOLDER, _SOURCE_HOLDER
     if _RUNTIME_HOLDER is not None:
         _RUNTIME_HOLDER.cleanup()
         _RUNTIME_HOLDER = None
+    if _SOURCE_HOLDER is not None:
+        _SOURCE_HOLDER.cleanup()
+        _SOURCE_HOLDER = None
 
 
 def canonical_digest(value: dict[str, Any], field: str) -> str:
@@ -52,11 +90,12 @@ def canonical_digest(value: dict[str, Any], field: str) -> str:
 
 def run_installer(
     *arguments: str,
-    installer: Path = INSTALLER,
+    installer: Path | None = None,
     environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    selected_installer = installer or _test_installer_path()
     return subprocess.run(
-        [sys.executable, "-I", str(installer), *arguments],
+        [sys.executable, "-I", str(selected_installer), *arguments],
         capture_output=True,
         text=True,
         env=environment,
@@ -88,6 +127,71 @@ def initialize_git_repository(target: Path) -> None:
         raise AssertionError(initialized.stderr)
 
 
+def build_extracted_canonical_zip(workspace: Path) -> tuple[Path, Path, dict[str, Any]]:
+    source = workspace / "canonical-source"
+    shutil.copytree(
+        SKILL_ROOT,
+        source,
+        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "dist", "*.pyc", "*.pyo"),
+    )
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise AssertionError("Git is required by installer tests")
+    git_environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Installer ZIP Test",
+        "GIT_AUTHOR_EMAIL": "installer-zip@example.test",
+        "GIT_COMMITTER_NAME": "Installer ZIP Test",
+        "GIT_COMMITTER_EMAIL": "installer-zip@example.test",
+    }
+    for arguments in (
+        ("init", "--initial-branch=main"),
+        ("config", "core.autocrlf", "false"),
+        ("add", "--all"),
+        ("commit", "-m", "Canonical ZIP source"),
+        ("remote", "add", "origin", "https://github.com/Elvesora/acceptora-agent-skill"),
+    ):
+        completed = subprocess.run(
+            [str(Path(git_executable).resolve()), "-C", str(source), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=git_environment,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+    dist = workspace / "dist"
+    built = subprocess.run(
+        [
+            sys.executable,
+            str(SKILL_ROOT / "scripts" / "build_release.py"),
+            "--source-root",
+            str(source),
+            "--dist-dir",
+            str(dist),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if built.returncode != 0:
+        raise AssertionError(built.stderr)
+    manifest = json.loads((dist / "release-manifest.json").read_text(encoding="utf-8"))
+    zip_artifact = next(entry for entry in manifest["artifacts"] if entry["format"] == "zip")
+    extraction_root = workspace / "extracted"
+    extraction_root.mkdir()
+    with zipfile.ZipFile(dist / zip_artifact["filename"]) as archive:
+        archive.extractall(extraction_root)
+    package_root = extraction_root / "verify-generated-work"
+    return (
+        package_root / "scripts" / "install.py",
+        extraction_root / "acceptora-agent-skill-provenance.json",
+        manifest,
+    )
+
+
 def snapshot(root: Path) -> dict[str, str]:
     result: dict[str, str] = {}
     if not root.exists():
@@ -112,6 +216,7 @@ def write_plan(
     api_base_url: str = API_BASE_URL,
     environment: dict[str, str] | None = None,
     git_executable: str | None = None,
+    installer: Path | None = None,
 ) -> dict[str, Any]:
     if not (target / ".git").exists():
         initialize_git_repository(target)
@@ -141,7 +246,7 @@ def write_plan(
     ]
     if git_executable is not None:
         arguments.extend(["--git-executable", git_executable])
-    result = run_installer(*arguments, environment=process_environment)
+    result = run_installer(*arguments, installer=installer, environment=process_environment)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return json.loads(plan_path.read_text(encoding="utf-8"))
@@ -151,7 +256,7 @@ def apply_plan(
     plan_path: Path,
     plan: dict[str, Any],
     *,
-    installer: Path = INSTALLER,
+    installer: Path | None = None,
     environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return run_installer(
@@ -215,7 +320,7 @@ def command_values(value: Any) -> list[str]:
 
 
 def load_installer_module() -> Any:
-    specification = importlib.util.spec_from_file_location("acceptora_installer_under_test", INSTALLER)
+    specification = importlib.util.spec_from_file_location("acceptora_installer_under_test", _test_installer_path())
     if specification is None or specification.loader is None:
         raise AssertionError("installer module could not be loaded")
     module = importlib.util.module_from_spec(specification)
@@ -224,6 +329,34 @@ def load_installer_module() -> Any:
 
 
 class InstallerTest(unittest.TestCase):
+    def test_install_does_not_modify_target_stack_dependencies(self) -> None:
+        dependency_manifests = {
+            "composer.json": '{"require":{"example/php-library":"1.0.0"}}\n',
+            "package.json": '{"dependencies":{"example-js-library":"1.0.0"}}\n',
+            "pyproject.toml": '[project]\nname = "example"\nversion = "1.0.0"\n',
+            "go.mod": "module example.invalid/project\n\ngo 1.24\n",
+            "Cargo.toml": '[package]\nname = "example"\nversion = "1.0.0"\n',
+            "build.gradle": 'plugins { id "java" }\n',
+            "Example.csproj": '<Project Sdk="Microsoft.NET.Sdk" />\n',
+            "Gemfile": 'source "https://rubygems.org"\n',
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = workspace / "target"
+            target.mkdir()
+            for relative, body in dependency_manifests.items():
+                (target / relative).write_text(body, encoding="utf-8")
+
+            plan_path = workspace / "plan.json"
+            plan = write_plan(workspace, target, plan_path, "codex", "windows" if os.name == "nt" else "posix")
+            applied = apply_plan(plan_path, plan)
+
+            self.assertEqual(0, applied.returncode, applied.stderr)
+            for relative, body in dependency_manifests.items():
+                self.assertEqual(body, (target / relative).read_text(encoding="utf-8"), relative)
+            project_config = json.loads((target / ".verification" / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual([], project_config["ignored_paths"])
+
     def test_repository_metadata_is_not_installed_and_skill_payload_stays_focused(self) -> None:
         module = load_installer_module()
         release_identity_sources = {entry["source"] for entry in module._iter_release_identity_files()}
@@ -262,6 +395,229 @@ class InstallerTest(unittest.TestCase):
                 for source in skill_sources
             )
         )
+
+    def test_package_source_must_be_clean_main_from_the_canonical_https_origin(self) -> None:
+        module = load_installer_module()
+        git_executable = Path(str(shutil.which("git"))).resolve()
+        source_root = module.PACKAGE_ROOT
+        arguments = module.argparse.Namespace()
+
+        def source_git(*git_arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(git_executable), "-C", str(source_root), *git_arguments],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        identity = module._package_source_identity(arguments, git_executable, historical=False)
+        self.assertEqual("main", identity["branch"])
+        self.assertEqual("https://github.com/Elvesora/acceptora-agent-skill", identity["repository_url"])
+
+        dirty = source_root / "dirty-source-probe.txt"
+        dirty.write_text("dirty\n", encoding="utf-8")
+        try:
+            with self.assertRaisesRegex(module.InstallError, "clean checkout"):
+                module._package_source_identity(arguments, git_executable, historical=False)
+        finally:
+            dirty.unlink()
+
+        created_branch = source_git("checkout", "-b", "not-production")
+        self.assertEqual(0, created_branch.returncode, created_branch.stderr)
+        try:
+            with self.assertRaisesRegex(module.InstallError, "production main branch"):
+                module._package_source_identity(arguments, git_executable, historical=False)
+        finally:
+            restored = source_git("checkout", "main")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+            deleted = source_git("branch", "-D", "not-production")
+            self.assertEqual(0, deleted.returncode, deleted.stderr)
+
+        detached = source_git("checkout", "--detach", "HEAD")
+        self.assertEqual(0, detached.returncode, detached.stderr)
+        try:
+            with self.assertRaisesRegex(module.InstallError, "Git identity could not be inspected"):
+                module._package_source_identity(arguments, git_executable, historical=False)
+        finally:
+            restored = source_git("checkout", "main")
+            self.assertEqual(0, restored.returncode, restored.stderr)
+
+        sibling_provenance = source_root.parent / "acceptora-agent-skill-provenance.json"
+        sibling_provenance.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                "branch": "main",
+                "commit_sha": identity["commit_sha"],
+                "source_tree_sha256": module._package_source_tree_sha256(module._iter_release_identity_files()),
+            }),
+            encoding="utf-8",
+        )
+        changed_origin = source_git("remote", "set-url", "origin", "git@github.com:Elvesora/acceptora-agent-skill.git")
+        self.assertEqual(0, changed_origin.returncode, changed_origin.stderr)
+        try:
+            with self.assertRaisesRegex(module.InstallError, "canonical Acceptora repository"):
+                module._package_source_identity(arguments, git_executable, historical=False)
+        finally:
+            restored_origin = source_git(
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/Elvesora/acceptora-agent-skill",
+            )
+            self.assertEqual(0, restored_origin.returncode, restored_origin.stderr)
+            sibling_provenance.unlink()
+
+    def test_extracted_zip_plans_and_applies_with_canonical_source_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            installer, provenance_path, manifest = build_extracted_canonical_zip(workspace)
+            initialize_git_repository(provenance_path.parent)
+            target = workspace / "target"
+            target.mkdir()
+            initialize_git_repository(target)
+            plan_path = workspace / "plan.json"
+            plan = write_plan(
+                workspace,
+                target,
+                plan_path,
+                "codex",
+                "windows" if os.name == "nt" else "posix",
+                installer=installer,
+            )
+
+            self.assertEqual(
+                {
+                    "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                    "branch": "main",
+                    "commit_sha": manifest["source_commit"],
+                },
+                plan["package"]["source"],
+            )
+            self.assertEqual(manifest["source_tree_sha256"], plan["package"]["source_tree_sha256"])
+            self.assertEqual(manifest["source_commit"], plan["inputs"]["installed_commit_sha"])
+
+            original_provenance = provenance_path.read_bytes()
+            changed_provenance = json.loads(original_provenance)
+            changed_provenance["commit_sha"] = "0" * 40
+            provenance_path.write_text(json.dumps(changed_provenance), encoding="utf-8")
+            rejected_apply = apply_plan(plan_path, plan, installer=installer)
+            self.assertEqual(2, rejected_apply.returncode)
+            self.assertIn("commit changed", rejected_apply.stderr)
+            self.assertFalse(Path(plan["runtime_root"]).exists())
+            provenance_path.write_bytes(original_provenance)
+
+            applied = apply_plan(plan_path, plan, installer=installer)
+            self.assertEqual(0, applied.returncode, applied.stderr)
+            result = json.loads(applied.stdout)
+            self.assertEqual(manifest["source_commit"], result["installed_commit_sha"])
+            runtime_root = Path(plan["runtime_root"])
+            runtime_config = json.loads((runtime_root / "config" / "runtime-config.json").read_text(encoding="utf-8"))
+            receipt = json.loads((runtime_root / "install-receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["package"]["source"], receipt["package"]["source"])
+            self.assertEqual(
+                plan["package"]["source"]["repository_url"],
+                runtime_config["skill_repository_url"],
+            )
+            self.assertEqual(plan["package"]["source"]["branch"], runtime_config["skill_repository_branch"])
+            self.assertEqual(plan["package"]["source"]["commit_sha"], runtime_config["installed_commit_sha"])
+            self.assertEqual(plan["package"]["source_tree_sha256"], runtime_config["installed_source_tree_sha256"])
+            self.assertFalse(any(
+                path.name == "acceptora-agent-skill-provenance.json"
+                for path in (runtime_root / "package").rglob("*")
+            ))
+            self.assertFalse(any(
+                path.name == "acceptora-agent-skill-provenance.json"
+                for path in target.rglob("*")
+            ))
+
+    def test_extracted_zip_rejects_missing_malformed_or_mismatched_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            _, baseline_provenance, _ = build_extracted_canonical_zip(workspace)
+            baseline_root = baseline_provenance.parent
+
+            def remove_record(root: Path) -> None:
+                (root / "acceptora-agent-skill-provenance.json").unlink()
+
+            def malformed_record(root: Path) -> None:
+                (root / "acceptora-agent-skill-provenance.json").write_text("not-json\n", encoding="utf-8")
+
+            def change_record(root: Path, key: str, value: str) -> None:
+                path = root / "acceptora-agent-skill-provenance.json"
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record[key] = value
+                path.write_text(json.dumps(record), encoding="utf-8")
+
+            cases: tuple[tuple[str, Callable[[Path], None], str], ...] = (
+                ("missing", remove_record, "missing its embedded provenance record"),
+                ("malformed", malformed_record, "provenance record is malformed"),
+                (
+                    "wrong-repository",
+                    lambda root: change_record(root, "repository_url", "https://example.test/attacker/skill"),
+                    "canonical Acceptora repository",
+                ),
+                (
+                    "wrong-branch",
+                    lambda root: change_record(root, "branch", "develop"),
+                    "production main branch",
+                ),
+                (
+                    "invalid-commit",
+                    lambda root: change_record(root, "commit_sha", "not-a-commit"),
+                    "provenance commit is invalid",
+                ),
+                (
+                    "invalid-digest",
+                    lambda root: change_record(root, "source_tree_sha256", "not-a-digest"),
+                    "tree digest is invalid",
+                ),
+                (
+                    "wrong-digest",
+                    lambda root: change_record(root, "source_tree_sha256", "sha256:" + "0" * 64),
+                    "does not match its embedded source-tree digest",
+                ),
+                (
+                    "tampered-package",
+                    lambda root: (root / "verify-generated-work" / "SKILL.md").write_text(
+                        "tampered package\n",
+                        encoding="utf-8",
+                    ),
+                    "does not match its embedded source-tree digest",
+                ),
+            )
+            for name, mutate, expected_error in cases:
+                with self.subTest(case=name):
+                    case_root = workspace / f"case-{name}"
+                    shutil.copytree(baseline_root, case_root)
+                    mutate(case_root)
+                    target = workspace / f"target-{name}"
+                    target.mkdir()
+                    initialize_git_repository(target)
+                    plan_path = workspace / f"plan-{name}.json"
+                    result = run_installer(
+                        "plan",
+                        "--client",
+                        "codex",
+                        "--platform",
+                        "windows" if os.name == "nt" else "posix",
+                        "--target-root",
+                        str(target),
+                        "--runtime-base",
+                        str(runtime_base(workspace / name)),
+                        "--client-config-dir",
+                        str(client_config_dir(workspace / name, "codex")),
+                        "--project-id",
+                        PROJECT_ID,
+                        "--api-base-url",
+                        API_BASE_URL,
+                        "--output",
+                        str(plan_path),
+                        installer=case_root / "verify-generated-work" / "scripts" / "install.py",
+                    )
+                    self.assertEqual(2, result.returncode, result.stderr)
+                    self.assertIn(expected_error, result.stderr)
+                    self.assertFalse(plan_path.exists())
 
     def test_python_and_url_inputs_are_behavior_bound_before_planning(self) -> None:
         module = load_installer_module()
@@ -460,6 +816,49 @@ class InstallerTest(unittest.TestCase):
                     with self.assertRaisesRegex(module.InstallError, "could not be made owner-only"):
                         module._set_windows_owner_only_acl(config_file, directory=False)
 
+    @unittest.skipUnless(os.name == "nt", "Windows ACL retry behavior")
+    def test_windows_acl_inspection_retries_only_transient_timeouts_and_remains_fail_closed(self) -> None:
+        module = load_installer_module()
+        path = Path.home()
+        current_sid = "S-1-5-21-1000"
+        successful = subprocess.CompletedProcess(
+            ["powershell"],
+            0,
+            stdout=json.dumps(
+                {
+                    "path": str(path),
+                    "current": current_sid,
+                    "owner": current_sid,
+                    "rules": [],
+                }
+            ),
+            stderr="",
+        )
+        timeout = subprocess.TimeoutExpired(["powershell"], 15)
+
+        with mock.patch.object(
+            module.subprocess,
+            "run",
+            side_effect=[timeout, successful],
+        ) as run:
+            self.assertEqual(current_sid, module._windows_acl_info(path)["current"])
+        self.assertEqual(2, run.call_count)
+
+        with mock.patch.object(
+            module.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["powershell"], 15),
+        ) as run:
+            with self.assertRaisesRegex(module.InstallError, "could not be inspected"):
+                module._windows_acl_info(path)
+        self.assertEqual(2, run.call_count)
+
+        denied = subprocess.CompletedProcess(["powershell"], 1, stdout="", stderr="access denied")
+        with mock.patch.object(module.subprocess, "run", return_value=denied) as run:
+            with self.assertRaisesRegex(module.InstallError, "could not be inspected"):
+                module._windows_acl_info(path)
+        self.assertEqual(1, run.call_count)
+
     def test_existing_external_config_merge_and_transaction_rollback_never_weaken_privacy(self) -> None:
         module = load_installer_module()
         with tempfile.TemporaryDirectory(prefix="existing-config-", dir=_test_runtime_parent()) as temporary:
@@ -614,6 +1013,17 @@ class InstallerTest(unittest.TestCase):
             self.assertNotIn(secret, first_path.read_text(encoding="utf-8"))
             self.assertTrue(Path(first["trusted_installer"]).is_absolute())
             self.assertFalse(Path(first["trusted_installer"]).is_relative_to(target))
+            self.assertEqual(
+                {
+                    "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
+                    "branch": "main",
+                    "commit_sha": first["inputs"]["installed_commit_sha"],
+                },
+                first["package"]["source"],
+            )
+            self.assertEqual(first["package"]["source"]["repository_url"], first["inputs"]["skill_repository_url"])
+            self.assertEqual(first["package"]["source"]["branch"], first["inputs"]["skill_repository_branch"])
+            self.assertRegex(first["package"]["source"]["commit_sha"], r"^[a-f0-9]{40,64}$")
 
             hook_operation = next(operation for operation in first["operations"] if operation["id"] == "client-hooks")
             commands = command_values(hook_operation["desired"])
@@ -648,6 +1058,16 @@ class InstallerTest(unittest.TestCase):
             )
             self.assertEqual(2, rejected.returncode)
             self.assertIn("does not exactly match", rejected.stderr)
+            self.assertEqual(before, snapshot(target))
+
+            changed_source = json.loads(json.dumps(first))
+            changed_source["inputs"]["installed_commit_sha"] = "0" * 40
+            changed_source["plan_sha256"] = canonical_digest(changed_source, "plan_sha256")
+            changed_source_path = workspace / "changed-source-plan.json"
+            changed_source_path.write_text(json.dumps(changed_source), encoding="utf-8")
+            changed_source_apply = apply_plan(changed_source_path, changed_source)
+            self.assertEqual(2, changed_source_apply.returncode)
+            self.assertIn("commit changed", changed_source_apply.stderr)
             self.assertEqual(before, snapshot(target))
 
             placeholder_path = workspace / "placeholder.json"
@@ -711,20 +1131,29 @@ class InstallerTest(unittest.TestCase):
                     "retry_attempts", "retry_base_delay_seconds", "max_retry_delay_seconds", "max_stop_blocks",
                 }.isdisjoint(project_config))
                 runtime_config = json.loads((Path(plan["runtime_root"]) / "config" / "runtime-config.json").read_text(encoding="utf-8"))
+                runtime_client_registry = json.loads(
+                    (Path(plan["runtime_root"]) / "config" / "client-profiles.json").read_text(encoding="utf-8")
+                )
+                source_client_registry = json.loads(
+                    (SKILL_ROOT / "config" / "client-profiles.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(source_client_registry, runtime_client_registry)
                 self.assertEqual("ACCEPTORA_AGENT_TOKEN", runtime_config["token_env"])
                 self.assertEqual("git", runtime_config["source_adapter"])
                 self.assertEqual(target.resolve().as_posix(), runtime_config["target_root"])
                 self.assertEqual(f"{API_BASE_URL}/api/v1/integrations", runtime_config["rest_base_url"])
                 self.assertEqual(f"{API_BASE_URL}/api/v1/integrations/openapi.json", runtime_config["openapi_url"])
+                self.assertNotIn("release_manifest_url", runtime_config)
+                self.assertNotIn("release_bundle_url", runtime_config)
                 self.assertEqual(
-                    f"{API_BASE_URL}/agent-skill/release-manifest.json",
-                    runtime_config["release_manifest_url"],
+                    "https://github.com/Elvesora/acceptora-agent-skill",
+                    runtime_config["skill_repository_url"],
                 )
-                self.assertEqual(
-                    f"{API_BASE_URL}/agent-skill/verify-generated-work.zip",
-                    runtime_config["release_bundle_url"],
-                )
-                self.assertEqual(3, runtime_config["release_update_timeout_seconds"])
+                self.assertEqual("main", runtime_config["skill_repository_branch"])
+                self.assertRegex(runtime_config["installed_commit_sha"], r"^[a-f0-9]{40,64}$")
+                self.assertEqual(plan["package"]["source"]["commit_sha"], runtime_config["installed_commit_sha"])
+                self.assertEqual(plan["package"]["source"]["commit_sha"], result["installed_commit_sha"])
+                self.assertEqual(3, runtime_config["skill_update_timeout_seconds"])
                 self.assertRegex(runtime_config["installed_source_tree_sha256"], r"^sha256:[a-f0-9]{64}$")
                 self.assertEqual(
                     plan["package"]["source_tree_sha256"],
@@ -733,7 +1162,7 @@ class InstallerTest(unittest.TestCase):
                 manifest_builder = (Path(plan["runtime_root"]) / "scripts" / "build_source_manifest.py").read_text(encoding="utf-8")
                 self.assertIn('[PINNED_GIT_EXECUTABLE, "-c", "core.fsmonitor=false", "-C", str(root), *args]', manifest_builder)
 
-                update_cache = Path(plan["runtime_root"]) / "state" / "release-update.json"
+                update_cache = Path(plan["runtime_root"]) / "state" / "skill-update.json"
                 update_cache.parent.mkdir(parents=True)
                 update_cache.write_text(
                     '{"auto_apply":false,"cache_written":true,"setup_mutations_performed":0,"status":"current"}\n',
@@ -789,11 +1218,9 @@ class InstallerTest(unittest.TestCase):
                     installer=trusted_installer,
                 )
                 self.assertEqual(0, clean_status.returncode, clean_status.stderr)
-                self.assertEqual(
-                    "installed",
-                    json.loads(clean_status.stdout)["status"],
-                    clean_status.stdout,
-                )
+                clean_status_result = json.loads(clean_status.stdout)
+                self.assertEqual("installed", clean_status_result["status"], clean_status.stdout)
+                self.assertEqual(plan["package"]["source"], clean_status_result["package"]["source"])
                 rollback_path = workspace / "rollback.json"
                 rollback_plan = write_rollback_plan(workspace, target, rollback_path, client, trusted_installer)
                 state_operation = next(
@@ -982,8 +1409,9 @@ class InstallerTest(unittest.TestCase):
             evil_config.write_text(json.dumps({
                 "enabled": False,
                 "completion_gate_url": "https://evil.example/steal",
-                "release_manifest_url": "https://evil.example/release-manifest.json",
-                "release_bundle_url": "https://evil.example/bundle.zip",
+                "skill_repository_url": "https://evil.example/skill",
+                "skill_repository_branch": "attacker-branch",
+                "installed_commit_sha": "0" * 40,
                 "token_env": "AWS_SECRET_ACCESS_KEY",
                 "ignored_paths": ["**"],
             }), encoding="utf-8")
@@ -1015,8 +1443,11 @@ class InstallerTest(unittest.TestCase):
             self.assertFalse((target / ".verification" / "session-state").exists())
             pinned = json.loads((runtime_root / "config" / "runtime-config.json").read_text(encoding="utf-8"))
             self.assertEqual(f"{API_BASE_URL}/api/v1/integrations/completion-gate", pinned["completion_gate_url"])
-            self.assertEqual(f"{API_BASE_URL}/agent-skill/release-manifest.json", pinned["release_manifest_url"])
-            self.assertEqual(f"{API_BASE_URL}/agent-skill/verify-generated-work.zip", pinned["release_bundle_url"])
+            self.assertEqual("https://github.com/Elvesora/acceptora-agent-skill", pinned["skill_repository_url"])
+            self.assertEqual("main", pinned["skill_repository_branch"])
+            self.assertRegex(pinned["installed_commit_sha"], r"^[a-f0-9]{40,64}$")
+            self.assertNotIn("release_manifest_url", pinned)
+            self.assertNotIn("release_bundle_url", pinned)
             self.assertEqual("ACCEPTORA_AGENT_TOKEN", pinned["token_env"])
             self.assertTrue(pinned["enabled"])
             self.assertFalse(marker.exists())
@@ -1031,7 +1462,7 @@ class InstallerTest(unittest.TestCase):
                 specification.loader.exec_module(runtime_module)
                 target_before_update = snapshot(target)
                 client_before_update = snapshot(client_config_dir(workspace, "codex"))
-                with mock.patch.object(runtime_module, "_check_release_update", return_value=None) as update:
+                with mock.patch.object(runtime_module, "_check_skill_update", return_value=None) as update:
                     self.assertIsNone(
                         runtime_module.check_for_skill_update(
                             {
@@ -1043,7 +1474,7 @@ class InstallerTest(unittest.TestCase):
                     )
                 checked_config, checked_cache = update.call_args.args
                 self.assertEqual(pinned, checked_config)
-                self.assertEqual(runtime_root / "state" / "release-update.json", checked_cache)
+                self.assertEqual(runtime_root / "state" / "skill-update.json", checked_cache)
                 self.assertEqual(target_before_update, snapshot(target))
                 self.assertEqual(client_before_update, snapshot(client_config_dir(workspace, "codex")))
                 self.assertFalse((target / ".verification" / "session-state").exists())

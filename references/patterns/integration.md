@@ -13,4 +13,4 @@ Apply to external providers, webhooks, callbacks, polling, sync, destinations, o
 - Check logs/audit/correlation without exposing payload secrets.
 - Confirm no live external side effect is implied if the provider was not connected.
 
-Use provider-object, webhook route, mapping, queue, and external-identity anchors. Make live calls optional unless essential and safe.
+Use `api:` or `route:` for provider and webhook operations, `file:` for mappings and workers, `config:` for provider settings, and `data:` for external identities or synchronized state. Make live calls optional unless essential and safe.

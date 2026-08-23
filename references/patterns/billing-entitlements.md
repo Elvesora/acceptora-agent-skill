@@ -13,4 +13,4 @@ Apply to pricing, subscriptions, usage limits, plans, trials, credits, invoices,
 - Verify renewal/cancellation timing and timezone boundaries.
 - Use provider sandbox data; never perform a real charge without explicit optional warning and approval.
 
-Use billing-provider, entitlement, quota, webhook, and plan-config anchors. Treat uncertain charge/access behavior as high risk.
+Use `api:` for provider and webhook operations, `data:` for entitlement or quota state, and `config:` for plan configuration. Treat uncertain charge/access behavior as high risk.

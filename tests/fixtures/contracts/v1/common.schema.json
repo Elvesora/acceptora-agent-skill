@@ -332,6 +332,25 @@
             "not_run"
           ]
         },
+        "evidence_sufficiency": {
+          "type": "string",
+          "enum": [
+            "sufficient",
+            "insufficient"
+          ]
+        },
+        "blocker_reason": {
+          "type": "string",
+          "enum": [
+            "missing_credentials",
+            "insufficient_permissions",
+            "missing_prerequisite",
+            "environment_unavailable",
+            "external_dependency_unavailable",
+            "resource_limit",
+            "other"
+          ]
+        },
         "exit_status": {
           "type": [
             "integer",
@@ -352,7 +371,45 @@
           "minLength": 1,
           "maxLength": 500
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "blocker_reason"
+            ]
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "not_run"
+              },
+              "evidence_sufficiency": {
+                "const": "insufficient"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "not_run"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_sufficiency": {
+                "const": "insufficient"
+              }
+            }
+          }
+        }
+      ]
     },
     "evidenceReference": {
       "type": "object",
