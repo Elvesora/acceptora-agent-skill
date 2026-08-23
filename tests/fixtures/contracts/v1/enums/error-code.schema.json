@@ -5,7 +5,6 @@
   "type": "string",
   "enum": [
     "AUTH_REQUIRED",
-    "REAUTHENTICATION_REQUIRED",
     "SCOPE_DENIED",
     "FEATURE_AMBIGUOUS",
     "FEATURE_ARCHIVED",
