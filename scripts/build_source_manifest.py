@@ -74,7 +74,12 @@ def _is_ignored(path: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-def _run_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+def _run_git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+    input_bytes: bytes | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     environment.update(
         {
@@ -87,6 +92,7 @@ def _run_git(root: Path, *args: str, check: bool = True) -> subprocess.Completed
     try:
         process = subprocess.run(
             ["git", "-c", "core.fsmonitor=false", "-C", str(root), *args],
+            input=input_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
@@ -303,6 +309,116 @@ def _untracked_paths(root: Path) -> set[str]:
     return paths
 
 
+def _filesystem_relative_path(root: Path, path: Path) -> str:
+    try:
+        relative = path.relative_to(root).as_posix()
+        encoded = relative.encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, ValueError) as error:
+        raise ManifestError("strict Git source capture requires UTF-8 repository paths") from error
+    return _decode_git_path(encoded)
+
+
+def _git_ignored_paths(root: Path, candidates: Iterable[str]) -> set[str]:
+    queries: dict[bytes, str] = {}
+    for relative in sorted(set(candidates)):
+        validated = _decode_git_path(relative.encode("utf-8", errors="strict"))
+        query = validated.encode("utf-8")
+        queries[query] = validated
+    if not queries:
+        return set()
+
+    process = _run_git(
+        root,
+        "check-ignore",
+        "--no-index",
+        "-z",
+        "--stdin",
+        check=False,
+        input_bytes=b"\0".join(queries) + b"\0",
+    )
+    if process.returncode not in {0, 1}:
+        message = process.stderr.decode("utf-8", errors="replace").strip()
+        raise ManifestError(f"Git ignore query failed: {message or process.returncode}")
+    if process.stderr:
+        raise ManifestError("Git ignore query returned unexpected diagnostics")
+    if process.stdout and not process.stdout.endswith(b"\0"):
+        raise ManifestError("Git ignore query returned an invalid path list")
+
+    records = process.stdout[:-1].split(b"\0") if process.stdout else []
+    if len(records) != len(set(records)) or any(record not in queries for record in records):
+        raise ManifestError("Git ignore query returned an unexpected path")
+    if (process.returncode == 0) != bool(records):
+        raise ManifestError("Git ignore query returned an inconsistent result")
+    return {queries[record] for record in records}
+
+
+def _assert_no_git_omitted_special_files(root: Path, ignores: tuple[str, ...]) -> None:
+    try:
+        root_metadata = root.lstat()
+    except OSError as error:
+        raise ManifestError(f"source directory could not be inspected safely: {root}") from error
+    pending_directories = [(root, _stat_identity(root_metadata))]
+
+    while pending_directories:
+        candidates: list[tuple[str, Path, os.stat_result, str]] = []
+        for directory, expected_identity in pending_directories:
+            try:
+                before = directory.lstat()
+            except OSError as error:
+                raise ManifestError(f"source directory could not be inspected safely: {directory}") from error
+            if _stat_identity(before) != expected_identity:
+                raise ManifestError(f"source directory changed during capture: {directory}")
+            if stat.S_ISLNK(before.st_mode) or _is_junction(directory) or not stat.S_ISDIR(before.st_mode):
+                raise ManifestError(f"source directory cannot be traversed safely: {directory}")
+            _assert_contained(directory, root)
+
+            discovered: list[str] = []
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        discovered.append(entry.name)
+            except OSError as error:
+                raise ManifestError(f"source directory could not be scanned safely: {directory}") from error
+            try:
+                after = directory.lstat()
+            except OSError as error:
+                raise ManifestError(f"source directory changed during capture: {directory}") from error
+            if _stat_identity(before) != _stat_identity(after):
+                raise ManifestError(f"source directory changed during capture: {directory}")
+
+            for name in sorted(discovered):
+                path = directory / name
+                relative = _filesystem_relative_path(root, path)
+                try:
+                    metadata = path.lstat()
+                except OSError as error:
+                    raise ManifestError(f"source path could not be inspected safely: {path}") from error
+                if _is_ignored(relative, ignores) or stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    continue
+                if _is_junction(path):
+                    candidates.append((relative, path, metadata, "junction"))
+                elif stat.S_ISDIR(metadata.st_mode):
+                    candidates.append((relative, path, metadata, "directory"))
+                else:
+                    candidates.append((relative, path, metadata, "special"))
+
+        ignored = _git_ignored_paths(
+            root,
+            (relative for relative, _, _, _ in candidates),
+        )
+        next_directories: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
+        for relative, path, metadata, kind in candidates:
+            if relative in ignored:
+                continue
+            if kind == "directory":
+                next_directories.append((path, _stat_identity(metadata)))
+                continue
+            if kind == "junction":
+                raise ManifestError(f"source path is a junction and cannot be captured safely: {path}")
+            raise ManifestError(f"source path is not a regular file or symlink: {path}")
+        pending_directories = next_directories
+
+
 def _assert_eligible_path_ancestors(root: Path, relative: str) -> None:
     current = root
     for part in Path(relative).parts[:-1]:
@@ -391,6 +507,7 @@ def _capture_git(root: Path, ignores: tuple[str, ...]) -> dict[str, Any]:
                 "index_object_id": index_entry["object_id"] if index_entry is not None else None,
             }
         )
+    _assert_no_git_omitted_special_files(root, ignores)
     snapshot: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "adapter": "git-v1",

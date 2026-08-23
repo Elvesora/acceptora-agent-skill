@@ -22,6 +22,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Validate all published checklist request bounds, nested types, enums, RFC 3339 timestamps, automated-evidence conditionals, source manifests, and ignored entries before sending a checklist.
 - Run the remote `main` update query from an isolated repository-free directory so a target repository's local `url.*.insteadOf` configuration cannot redirect it.
 - Remove Laravel-, Composer-, and Node-oriented default source ignores that could omit legitimate untracked files in repositories using another stack.
+- Reject non-ignored special filesystem objects that Git omits from untracked listings while pruning repository-ignored directories during strict source capture.
 
 ### Changed
 

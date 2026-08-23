@@ -308,9 +308,21 @@ class CompletionGatePayloadTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("ignored by repository\n", encoding="utf-8")
 
-            with patch.object(SOURCE_MANIFEST.os, "scandir", side_effect=AssertionError("Git ignored tree scanned")):
+            real_scandir = os.scandir
+            ignored_roots = {Path(relative).parts[0] for relative in git_ignored}
+            scanned_directories = []
+
+            def guarded_scandir(directory: str | os.PathLike[str]):
+                relative = Path(directory).resolve().relative_to(root.resolve())
+                if relative.parts and relative.parts[0] in ignored_roots:
+                    raise AssertionError(f"Git ignored tree scanned: {relative}")
+                scanned_directories.append(relative.as_posix())
+                return real_scandir(directory)
+
+            with patch.object(SOURCE_MANIFEST.os, "scandir", side_effect=guarded_scandir):
                 comparison = SOURCE_MANIFEST.compare_with_baseline(baseline, root)
             self.assertEqual([], comparison["entries"])
+            self.assertIn(".", scanned_directories)
 
             explicit_paths = ("build/generated.js", "cache/generated.bin")
             for relative in explicit_paths:
@@ -327,6 +339,33 @@ class CompletionGatePayloadTest(unittest.TestCase):
             self.assertEqual(set(explicit_paths), {entry["path"] for entry in included["entries"]})
             self.assertEqual([], excluded["entries"])
             self.assertEqual((".git/**", ".verification/**"), SOURCE_MANIFEST.DEFAULT_IGNORES)
+
+    def test_strict_git_traverses_directories_with_reincluded_descendants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".gitignore").write_text(
+                "foo/**\n!foo/bar/\n!foo/bar/keep.txt\n",
+                encoding="utf-8",
+            )
+            initialize_git(root)
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "baseline")
+            keep = root / "foo" / "bar" / "keep.txt"
+            keep.parent.mkdir(parents=True)
+            keep.write_text("included\n", encoding="utf-8")
+            real_scandir = os.scandir
+            scanned_directories = []
+
+            def recording_scandir(directory: str | os.PathLike[str]):
+                relative = Path(directory).resolve().relative_to(root.resolve())
+                scanned_directories.append(relative.as_posix())
+                return real_scandir(directory)
+
+            with patch.object(SOURCE_MANIFEST.os, "scandir", side_effect=recording_scandir):
+                snapshot = SOURCE_MANIFEST.capture_snapshot(root, "git")
+
+            self.assertIn("foo/bar", scanned_directories)
+            self.assertEqual([".gitignore", "foo/bar/keep.txt"], [entry["path"] for entry in snapshot["entries"]])
 
     def test_staged_rename_and_copy_have_distinct_content_bound_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -598,6 +637,58 @@ class CompletionGatePayloadTest(unittest.TestCase):
             os.mkfifo(root / "source.fifo")
 
             with self.assertRaisesRegex(SOURCE_MANIFEST.ManifestError, "not a regular file or symlink"):
+                SOURCE_MANIFEST.capture_snapshot(root, "git")
+
+    @unittest.skipIf(os.name == "nt", "POSIX special-file regression")
+    def test_strict_git_allows_git_ignored_special_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".gitignore").write_text("*.fifo\nignored-specials/\n", encoding="utf-8")
+            initialize_git(root)
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "baseline")
+            os.mkfifo(root / "root.fifo")
+            ignored_directory = root / "ignored-specials"
+            ignored_directory.mkdir()
+            os.mkfifo(ignored_directory / "nested.fifo")
+
+            snapshot = SOURCE_MANIFEST.capture_snapshot(root, "git")
+
+            self.assertEqual([".gitignore"], [entry["path"] for entry in snapshot["entries"]])
+
+    @unittest.skipIf(os.name == "nt", "POSIX special-file regression")
+    def test_strict_git_rejects_special_files_reincluded_by_negated_ignore_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".gitignore").write_text(
+                "foo/**\n!foo/bar/\n!foo/bar/keep.txt\n",
+                encoding="utf-8",
+            )
+            initialize_git(root)
+            run_git(root, "add", ".")
+            run_git(root, "commit", "-m", "baseline")
+            fifo = root / "foo" / "bar" / "keep.txt"
+            fifo.parent.mkdir(parents=True)
+            os.mkfifo(fifo)
+
+            with self.assertRaisesRegex(SOURCE_MANIFEST.ManifestError, "not a regular file or symlink"):
+                SOURCE_MANIFEST.capture_snapshot(root, "git")
+
+    def test_strict_git_fails_closed_when_ignore_query_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initialize_git(root)
+            (root / "empty-directory").mkdir()
+            real_run_git = SOURCE_MANIFEST._run_git
+
+            def fail_ignore_query(repository: Path, *arguments: str, **options: object):
+                if arguments and arguments[0] == "check-ignore":
+                    return subprocess.CompletedProcess(arguments, 128, b"", b"fatal: ignore failure")
+                return real_run_git(repository, *arguments, **options)
+
+            with patch.object(SOURCE_MANIFEST, "_run_git", side_effect=fail_ignore_query), self.assertRaisesRegex(
+                SOURCE_MANIFEST.ManifestError, "Git ignore query failed"
+            ):
                 SOURCE_MANIFEST.capture_snapshot(root, "git")
 
     def test_runtime_versions_are_loaded_from_the_package_manifest(self) -> None:
