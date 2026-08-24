@@ -1,5 +1,7 @@
 # Acceptora agent setup
 
+Human tutorial: [GETTING-STARTED.md](GETTING-STARTED.md). Coding agents follow this file.
+
 This skill supports Codex, Claude Code, and Gemini CLI through Streamable HTTP MCP or the contract-equivalent REST API in `references/rest-api-contract.md`. It can verify repositories in any programming language, framework, or mixed stack. Python and Git run the installed skill and source adapter; they are not target-application dependencies. Direct REST integrations can use any standards-compliant HTTP client and do not require an Acceptora SDK.
 
 Use the dated [client capability matrix](references/client-capabilities.md) for reviewed provider support, generated configuration paths, lifecycle events, and post-install discovery checks. Its machine-readable source is `config/client-profiles.json`.
@@ -67,7 +69,7 @@ For the downloadable alternative, get both public artifacts from the canonical A
 - `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip`
 - `https://www.acceptora.com/agent-skill/release-manifest.json`
 
-The response header `X-Acceptora-Artifact-SHA256` and external manifest bind the served bytes. Extract the entire ZIP outside the target repository. Keep the top-level `acceptora-agent-skill-provenance.json` beside the `verify-generated-work` directory; do not move only the package directory. The installer refuses a missing, malformed, wrong-repository, wrong-branch, wrong-commit, or wrong-tree provenance record. Use the extracted `verify-generated-work` directory as `<source-directory>` below. The external manifest binds the ZIP digest and size; the embedded record lets the extracted installer revalidate the canonical source commit and complete package identity before plan or apply.
+The response header `X-Acceptora-Artifact-SHA256` and external manifest bind the served bytes. Extract the entire ZIP outside the target repository. Keep the top-level `acceptora-agent-skill-provenance.json` beside the `acceptora` directory; do not move only the package directory. The installer refuses a missing, malformed, wrong-repository, wrong-branch, wrong-commit, or wrong-tree provenance record. Use the extracted `acceptora` directory as `<source-directory>` below. The external manifest binds the ZIP digest and size; the embedded record lets the extracted installer revalidate the canonical source commit and complete package identity before plan or apply.
 
 ## Plan
 
@@ -76,6 +78,8 @@ Write the plan outside the target worktree. Commands below use one-line PowerShe
 ```text
 & "<absolute-python>" -I "<source-directory>/scripts/install.py" plan --client "<codex|claude-code|gemini-cli>" --target-root "<absolute-git-worktree-root>" --project-id "<proj_ULID>" --api-base-url "<canonical-https-origin>" --python-executable "<absolute-python>" --git-executable "<absolute-git>" --format json --output "<external-path>/acceptora-install-plan.json"
 ```
+
+`--client` may be omitted when the process environment or target worktree identifies exactly one supported coding agent (`CLAUDECODE` / `CLAUDE_CODE`, `CODEX_HOME` / `CODEX_THREAD_ID`, `GEMINI_CLI`, or a unique `.claude`, `.agents`/`.codex`, or `.gemini` directory). Conflicting or missing signals still require an explicit `--client`. `--format text` prints a human review of the same plan; `--output` always stores the JSON document that `apply` requires. The installer never applies a plan until `apply` receives that exact `plan_sha256`.
 
 Optional `--runtime-base` and `--client-config-dir` paths must remain outside the worktree and inside the current user's verified home directory. They may not cross a symlink or junction, use an untrusted owner, or permit another local account to write or replace a path in the chain; an existing runtime base must already be private to the current user. Review the full source commit, target/runtime/config paths, pinned executables, origin, project ID, fixed token name, per-target MCP alias, every file operation and digest, conflicts, and warnings. The plan is non-mutating and contains no token value.
 

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Verify Generated Work"
+  display_name: "Acceptora"
   short_description: "Verify changes in any software stack"
-  default_prompt: "Use $verify-generated-work after implementing or changing a deliverable to synchronize its manual verification checklist."
+  default_prompt: "Use $acceptora after implementing or changing a deliverable to synchronize its manual verification checklist."

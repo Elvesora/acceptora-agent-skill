@@ -184,7 +184,7 @@ def build_extracted_canonical_zip(workspace: Path) -> tuple[Path, Path, dict[str
     extraction_root.mkdir()
     with zipfile.ZipFile(dist / zip_artifact["filename"]) as archive:
         archive.extractall(extraction_root)
-    package_root = extraction_root / "verify-generated-work"
+    package_root = extraction_root / "acceptora"
     return (
         package_root / "scripts" / "install.py",
         extraction_root / "acceptora-agent-skill-provenance.json",
@@ -372,11 +372,12 @@ class InstallerTest(unittest.TestCase):
             "README.md",
             "SECURITY.md",
             "SETUP.md",
+            "GETTING-STARTED.md",
             "SUPPORT.md",
         }:
             self.assertNotIn(source, package_sources)
             self.assertNotIn(source, skill_sources)
-        self.assertTrue({"CHANGELOG.md", "SETUP.md"}.issubset(release_identity_sources))
+        self.assertTrue({"CHANGELOG.md", "SETUP.md", "GETTING-STARTED.md"}.issubset(release_identity_sources))
         self.assertFalse(
             any(
                 source.split("/", 1)[0] in {".git", ".github", ".verification", "tests"}
@@ -579,7 +580,7 @@ class InstallerTest(unittest.TestCase):
                 ),
                 (
                     "tampered-package",
-                    lambda root: (root / "verify-generated-work" / "SKILL.md").write_text(
+                    lambda root: (root / "acceptora" / "SKILL.md").write_text(
                         "tampered package\n",
                         encoding="utf-8",
                     ),
@@ -613,7 +614,7 @@ class InstallerTest(unittest.TestCase):
                         API_BASE_URL,
                         "--output",
                         str(plan_path),
-                        installer=case_root / "verify-generated-work" / "scripts" / "install.py",
+                        installer=case_root / "acceptora" / "scripts" / "install.py",
                     )
                     self.assertEqual(2, result.returncode, result.stderr)
                     self.assertIn(expected_error, result.stderr)
@@ -1086,9 +1087,9 @@ class InstallerTest(unittest.TestCase):
 
     def test_apply_status_and_digest_bound_rollback_use_external_installer_for_all_clients(self) -> None:
         cases = {
-            "codex": ("windows", "AGENTS.md", ".agents/skills/verify-generated-work"),
-            "claude-code": ("posix", "CLAUDE.md", ".claude/skills/verify-generated-work"),
-            "gemini-cli": ("posix", "GEMINI.md", ".gemini/skills/verify-generated-work"),
+            "codex": ("windows", "AGENTS.md", ".agents/skills/acceptora"),
+            "claude-code": ("posix", "CLAUDE.md", ".claude/skills/acceptora"),
+            "gemini-cli": ("posix", "GEMINI.md", ".gemini/skills/acceptora"),
         }
         for client, (platform, instruction_name, skill_relative) in cases.items():
             with self.subTest(client=client), tempfile.TemporaryDirectory() as temporary:
@@ -1348,7 +1349,7 @@ class InstallerTest(unittest.TestCase):
             plan = write_plan(workspace, target, plan_path, "claude-code")
             self.assertEqual(0, apply_plan(plan_path, plan).returncode)
             trusted = Path(plan["trusted_installer"])
-            extra = target / ".claude" / "skills" / "verify-generated-work" / "extra.txt"
+            extra = target / ".claude" / "skills" / "acceptora" / "extra.txt"
             extra.write_text("user edit\n", encoding="utf-8")
             status = run_installer(
                 "status", "--client", "claude-code", "--target-root", str(target),
@@ -1415,7 +1416,7 @@ class InstallerTest(unittest.TestCase):
                 "token_env": "AWS_SECRET_ACCESS_KEY",
                 "ignored_paths": ["**"],
             }), encoding="utf-8")
-            project_skill = target / ".agents" / "skills" / "verify-generated-work"
+            project_skill = target / ".agents" / "skills" / "acceptora"
             (project_skill / "adapters" / "codex").mkdir(parents=True)
             (project_skill / "adapters" / "codex" / "task_start.py").write_text("raise SystemExit(99)\n", encoding="utf-8")
             (project_skill / "scripts" / "install.py").write_text("raise SystemExit(98)\n", encoding="utf-8")

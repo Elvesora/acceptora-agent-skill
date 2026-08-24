@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -31,6 +32,17 @@ ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 PLATFORMS = ("auto", "windows", "posix")
 CLIENT_REGISTRY_PATH = "config/client-profiles.json"
 CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+CLIENT_ENV_SIGNALS = {
+    "codex": ("CODEX_HOME", "CODEX_THREAD_ID"),
+    "claude-code": ("CLAUDECODE", "CLAUDE_CODE"),
+    "gemini-cli": ("GEMINI_CLI",),
+}
+CLIENT_MARKER_DIRECTORIES = {
+    "codex": (".agents", ".codex"),
+    "claude-code": (".claude",),
+    "gemini-cli": (".gemini",),
+}
+FALSEY_ENV_VALUES = {"", "0", "false", "no", "off"}
 EPHEMERAL_PARTS = {".git", ".github", ".pytest_cache", ".verification", "__pycache__", "dist", "tests"}
 EPHEMERAL_SUFFIXES = {".pyc", ".pyo", ".deferred"}
 RELEASE_IDENTITY_EXCLUDED_FILES = {
@@ -45,7 +57,11 @@ RELEASE_IDENTITY_EXCLUDED_FILES = {
     "scripts/build_release.py",
     "scripts/preview_install.py",
 }
-INSTALL_EXCLUDED_FILES = RELEASE_IDENTITY_EXCLUDED_FILES | {"CHANGELOG.md", "SETUP.md"}
+INSTALL_EXCLUDED_FILES = RELEASE_IDENTITY_EXCLUDED_FILES | {
+    "CHANGELOG.md",
+    "SETUP.md",
+    "GETTING-STARTED.md",
+}
 SKILL_FILES = {
     "LICENSE",
     "SKILL.md",
@@ -58,6 +74,7 @@ PINNED_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
 WINDOWS_TRUSTED_INSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 ACCEPTORA_TOKEN_PATTERN = r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$"
 MANAGED_HOOK_ID_PATTERN = re.compile(r"acceptora-target:([a-f0-9]{32})")
+PACKAGE_IDENTITY = "acceptora"
 RUNTIME_NAMESPACE = "acceptora/verify-generated-work/runtimes"
 RUNTIME_RECEIPT = "install-receipt.json"
 RUNTIME_PACKAGE_DIRECTORY = "package"
@@ -78,7 +95,7 @@ class InstallError(RuntimeError):
 
 def _assert_running_python_version() -> None:
     if sys.version_info < MINIMUM_PYTHON:
-        raise InstallError("verify-generated-work requires Python 3.11 or newer.")
+        raise InstallError("acceptora requires Python 3.11 or newer.")
 
 
 # Kept as a compatibility alias for callers of preview_install.py.
@@ -766,7 +783,7 @@ def _package_git_worktree_root(git_executable: Path) -> Path | None:
 
 
 def _embedded_package_source_identity(args: argparse.Namespace) -> dict[str, str]:
-    if PACKAGE_ROOT.name != "verify-generated-work":
+    if PACKAGE_ROOT.name != PACKAGE_IDENTITY:
         raise InstallError("The extracted skill package directory has an unexpected name.")
     provenance_path = PACKAGE_ROOT.parent / EMBEDDED_PROVENANCE_FILENAME
     if not provenance_path.exists() and not _is_linklike(provenance_path):
@@ -1188,6 +1205,61 @@ def _client_profile(client: str) -> dict[str, Any]:
         raise InstallError(f"Unsupported client: {client}") from exc
 
 
+def _env_flag(environ: Mapping[str, str], name: str) -> bool:
+    value = environ.get(name)
+    if value is None:
+        return False
+    return str(value).strip().casefold() not in FALSEY_ENV_VALUES
+
+
+def _is_client_marker(path: Path) -> bool:
+    return path.exists() and path.is_dir() and not _is_linklike(path)
+
+
+def _detect_client(
+    *,
+    explicit: str | None,
+    target_root: Path | None,
+    environ: Mapping[str, str],
+) -> str:
+    supported = ", ".join(_client_names())
+    if explicit:
+        if explicit not in _client_names():
+            raise InstallError(f"Unsupported client: {explicit}. Pass --client with one of: {supported}.")
+        return explicit
+
+    env_hits = [
+        client
+        for client, names in CLIENT_ENV_SIGNALS.items()
+        if any(_env_flag(environ, name) for name in names)
+    ]
+    if len(env_hits) == 1:
+        return env_hits[0]
+    if len(env_hits) > 1:
+        raise InstallError(
+            "The agent environment identifies multiple clients "
+            f"({', '.join(env_hits)}). Pass --client with exactly one of: {supported}."
+        )
+
+    marker_hits: list[str] = []
+    if target_root is not None:
+        marker_hits = [
+            client
+            for client, names in CLIENT_MARKER_DIRECTORIES.items()
+            if any(_is_client_marker(target_root / name) for name in names)
+        ]
+    if len(marker_hits) == 1:
+        return marker_hits[0]
+    if len(marker_hits) > 1:
+        raise InstallError(
+            "The target worktree has markers for multiple clients "
+            f"({', '.join(marker_hits)}). Pass --client with exactly one of: {supported}."
+        )
+    raise InstallError(
+        "Unable to detect the coding-agent client. Pass --client with one of: " + supported + "."
+    )
+
+
 def _source_mode(relative: str) -> int:
     return 0o755 if relative.endswith(".py") else 0o644
 
@@ -1253,7 +1325,7 @@ def _package_source_tree_sha256(files: list[dict[str, Any]]) -> str:
         public_files.append(
             {
                 "path": entry["source"],
-                "archive_path": f"verify-generated-work/{entry['source']}",
+                "archive_path": f"{PACKAGE_IDENTITY}/{entry['source']}",
                 "size": len(body),
                 "mode": entry["mode"],
                 "sha256": entry["sha256"],
@@ -2951,7 +3023,7 @@ def _apply_plan(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
             mutations += count
         receipt: dict[str, Any] = {
             "schema_version": 1,
-            "installer": "verify-generated-work",
+            "installer": PACKAGE_IDENTITY,
             "client": plan["client"],
             "platform": plan["platform"],
             "target_root": plan["target_root"],
@@ -3212,7 +3284,7 @@ def _validate_receipt(root: Path, client: str, runtime_root: Path, receipt: dict
     expected_receipt_path = _normal_path(runtime_root / RUNTIME_RECEIPT)
     if (
         receipt.get("schema_version") != 1
-        or receipt.get("installer") != "verify-generated-work"
+        or receipt.get("installer") != PACKAGE_IDENTITY
         or receipt.get("client") != client
         or receipt.get("target_root") != _normal_path(root)
         or receipt.get("runtime_root") != _normal_path(runtime_root)
@@ -3634,17 +3706,23 @@ def _execute_rollback(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
 
 
 def _write_output(value: dict[str, Any], output: str | None, output_format: str) -> None:
-    body = _json_text(value) if output_format == "json" else _text_result(value)
+    json_body = _json_text(value)
+    plan_path: str | None = None
     if output:
         output_path = Path(output).expanduser().resolve(strict=False)
         if output_path.exists() or _is_linklike(output_path):
             raise InstallError("The plan output already exists; refusing to overwrite it.")
-        _atomic_write(output_path, body.encode("utf-8"), create_only=True)
-    else:
-        sys.stdout.write(body)
+        _atomic_write(output_path, json_body.encode("utf-8"), create_only=True)
+        plan_path = _normal_path(output_path)
+        if output_format == "json":
+            return
+    if output_format == "json":
+        sys.stdout.write(json_body)
+        return
+    sys.stdout.write(_text_result(value, plan_path=plan_path))
 
 
-def _text_result(value: dict[str, Any]) -> str:
+def _text_result(value: dict[str, Any], plan_path: str | None = None) -> str:
     if "rollback_plan_sha256" in value and value.get("preview_only"):
         lines = [
             "ROLLBACK PLAN - 0 mutations performed",
@@ -3660,18 +3738,40 @@ def _text_result(value: dict[str, Any]) -> str:
         lines.append("No files were changed.")
         return "\n".join(lines) + "\n"
     if "plan_sha256" in value and value.get("preview_only"):
+        source = (value.get("package") or {}).get("source") or {}
+        inputs = value.get("inputs") or {}
         lines = [
             "INSTALL PLAN - 0 mutations performed",
             f"Client: {value['client']}",
             f"Target: {value['target_root']}",
-            f"Plan SHA-256: {value['plan_sha256']}",
+            f"Runtime: {value['runtime_root']}",
         ]
-        for operation in value["operations"]:
-            lines.append(f"- {operation['action']}: {operation['target']}")
-        if value["conflicts"]:
+        repository = source.get("repository_url")
+        branch = source.get("branch")
+        commit = source.get("commit_sha")
+        if repository or commit:
+            lines.append("Source: " + " ".join(part for part in (repository, branch, commit) if part))
+        if inputs.get("project_id"):
+            lines.append(f"Project: {inputs['project_id']}")
+        if inputs.get("api_base_url"):
+            lines.append(f"Origin: {inputs['api_base_url']}")
+        lines.append(f"Plan SHA-256: {value['plan_sha256']}")
+        lines.append("Operations:")
+        lines.extend(f"- {operation['action']}: {operation['target']}" for operation in value["operations"])
+        if value.get("conflicts"):
             lines.append("Conflicts:")
             lines.extend(f"- {entry['operation']}: {entry['message']}" for entry in value["conflicts"])
+        for warning in value.get("warnings") or []:
+            lines.append(f"Warning: {warning}")
         lines.append("No files were changed.")
+        python = inputs.get("python_executable") or "<absolute-python>"
+        saved_plan = plan_path or "<saved-plan.json>"
+        installer = _normal_path(Path(__file__).resolve())
+        lines.append("Apply only after you accept this exact digest:")
+        lines.append(
+            f'"{python}" -I "{installer}" apply --plan "{saved_plan}" '
+            f'--accept-plan-sha256 "{value["plan_sha256"]}"'
+        )
         return "\n".join(lines) + "\n"
     return _json_text(value)
 
@@ -3706,8 +3806,11 @@ def preview_main(argv: list[str] | None = None) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    client_help = (
+        "Coding-agent client. Omit to auto-detect from the agent environment or a unique project marker."
+    )
     plan = subparsers.add_parser("plan", help="Render a complete non-mutating installation plan")
-    plan.add_argument("--client", choices=_client_names(), required=True)
+    plan.add_argument("--client", choices=_client_names(), help=client_help)
     plan.add_argument("--target-root", required=True)
     plan.add_argument("--platform", choices=PLATFORMS, default="auto")
     plan.add_argument("--project-id", default="proj_REPLACE_WITH_PROJECT_ULID")
@@ -3724,12 +3827,12 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--accept-plan-sha256", required=True)
     apply.add_argument("--format", choices=("text", "json"), default="json")
     status_parser = subparsers.add_parser("status", help="Inspect a receipt without changing files")
-    status_parser.add_argument("--client", choices=_client_names(), required=True)
+    status_parser.add_argument("--client", choices=_client_names(), help=client_help)
     status_parser.add_argument("--target-root", required=True)
     status_parser.add_argument("--runtime-base")
     status_parser.add_argument("--format", choices=("text", "json"), default="json")
     rollback_plan = subparsers.add_parser("rollback-plan", help="Render a non-mutating canonical rollback plan")
-    rollback_plan.add_argument("--client", choices=_client_names(), required=True)
+    rollback_plan.add_argument("--client", choices=_client_names(), help=client_help)
     rollback_plan.add_argument("--target-root", required=True)
     rollback_plan.add_argument("--runtime-base")
     rollback_plan.add_argument("--format", choices=("text", "json"), default="json")
@@ -3745,6 +3848,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _assert_running_python_version()
         arguments = _parser().parse_args(argv)
+        if arguments.command in {"plan", "status", "rollback-plan"}:
+            arguments.client = _detect_client(
+                explicit=arguments.client,
+                target_root=Path(arguments.target_root),
+                environ=os.environ,
+            )
         if arguments.command == "plan":
             result = _build_plan(arguments)
             _write_output(result, arguments.output, arguments.format)

@@ -21,8 +21,9 @@ The unit suite validates skill metadata, customer documentation links, client te
 ## Change expectations
 
 - Keep `SKILL.md` focused, imperative, and under 500 lines. Its YAML frontmatter may contain only `name` and `description`.
+- Route install and update through `references/init.md` and diagnostics through `references/doctor.md`. Bare invocation remains the completion workflow so completion hooks still work.
 - Put detailed agent guidance in directly linked `references/` files and deterministic operations in tested `scripts/` files.
-- Keep repository documentation and community files outside the installed skill payload.
+- Keep repository documentation and community files, including `GETTING-STARTED.md` and `SETUP.md`, outside the installed skill payload.
 - Keep the canonical repository's `main` branch as the production source and sole update authority. The downloadable ZIP must remain a deterministic snapshot of a clean `main` commit, never an independently authored or version-selected source.
 - Preserve Python 3.11 compatibility unless a major release changes the supported platform.
 - Preserve the strict Git, filesystem, executable, origin, credential, plan, receipt, rollback, and external-runtime boundaries.

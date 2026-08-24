@@ -133,7 +133,7 @@ class Transport:
         )
         self.timeout_seconds = settings.timeout_seconds
         selected_skill_version = skill_version or str(load_manifest()["skill"]["version"])
-        self.user_agent = f"verify-generated-work-health/{selected_skill_version}"
+        self.user_agent = f"acceptora-health/{selected_skill_version}"
 
     def request(
         self,
@@ -595,7 +595,7 @@ def run_health(
         "params": {
             "protocolVersion": protocol_version,
             "capabilities": {},
-            "clientInfo": {"name": "verify-generated-work-health", "version": manifest["integration"]["version"]},
+            "clientInfo": {"name": "acceptora-health", "version": manifest["integration"]["version"]},
         },
     }
     initialize_response, initialize_headers = transport.request(
@@ -784,7 +784,7 @@ def main(argv: list[str] | None = None) -> int:
     confirmation_requested = False
     try:
         if sys.version_info < (3, 11):
-            raise HealthFailure("PYTHON_UNSUPPORTED", "verify-generated-work requires Python 3.11 or newer.")
+            raise HealthFailure("PYTHON_UNSUPPORTED", "acceptora requires Python 3.11 or newer.")
         args = parse_args(argv)
         confirmation_requested = args.confirm_connection
         if args.config:

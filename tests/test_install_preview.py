@@ -147,7 +147,7 @@ class InstallPreviewTest(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode, result.stderr)
             preview = json.loads(result.stdout)
-            self.assertTrue(preview["skill_copy"]["destination"].endswith("/.claude/skills/verify-generated-work"))
+            self.assertTrue(preview["skill_copy"]["destination"].endswith("/.claude/skills/acceptora"))
             self.assertTrue(preview["managed_blocks"][0]["target"].endswith("/CLAUDE.md"))
             self.assertTrue(any(entry["target"].endswith("/.claude.json") for entry in preview["manual_merges"]))
             self.assertFalse(any(entry["target"].endswith("/.codex/hooks.json") for entry in preview["manual_merges"]))

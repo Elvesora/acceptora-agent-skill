@@ -1,9 +1,9 @@
 ---
-name: verify-generated-work
-description: Create, reconcile, and consume durable manual-verification documents for changes in any programming language, framework, or mixed-stack Git repository. Use after implementing, fixing, changing, or finishing observable software, content, configuration, data, API, SDK, integration, or deployment work; when addressing human verification feedback; when continuing an existing feature with another agent; or when a completion hook reports an unsynchronized source revision, even if the user did not explicitly request a QA checklist.
+name: acceptora
+description: Create, reconcile, and consume durable manual-verification documents for changes in any programming language, framework, or mixed-stack Git repository. Use after implementing, fixing, changing, or finishing observable software, content, configuration, data, API, SDK, integration, or deployment work; when addressing human verification feedback; when continuing an existing feature with another agent; or when a completion hook reports an unsynchronized source revision, even if the user did not explicitly request a QA checklist. Use init to install or update the Acceptora connection. Use doctor to diagnose a missing, stale, or unhealthy connection.
 ---
 
-# Verify Generated Work
+# Acceptora
 
 Treat human verification as part of implementation completion. Synchronize one living feature checklist through the configured Acceptora MCP server or its contract-equivalent REST API, preserve human state, and report the durable feature URL. Never make a human decision.
 
@@ -24,13 +24,28 @@ MCP and the versioned REST API are equivalent transports for the same eight oper
 7. Never send secrets, environment files, private keys, session cookies, access tokens, or production customer data.
 8. Finish with either a synchronized checklist, an allowed exact-source exception, or a visible recoverable synchronization failure.
 
+## Commands
+
+| Command | When | Reference |
+|---|---|---|
+| `init` | Install, reconnect, or update the skill, MCP server, and hooks | [init](references/init.md) |
+| `doctor` | Diagnose discovery, credentials, health, or a stale install without changing files | [doctor](references/doctor.md) |
+| *(none)* | Completion hook or ordinary finished work: synchronize the checklist | Completion workflow below |
+
+Routing:
+
+- Explicit or clearly implied `init` (install, connect, set up, update the skill): load [init](references/init.md) and follow it.
+- Explicit or clearly implied `doctor` or `status` (why this is missing, unhealthy, or out of date): load [doctor](references/doctor.md).
+- No argument, a completion hook, or any request to finish, sync, or reconcile eligible work: run the completion workflow in this file. Never show a command menu instead of reconciling.
+- If `init` and `doctor` both appear to fit, ask once.
+
 ## Package and connection checks
 
+Installing, updating, and reconnecting are `init`. Diagnosing a live install is `doctor`. Do not improvise a third setup path.
+
+Use only a fresh checkout of the production `main` branch from `https://github.com/Elvesora/acceptora-agent-skill` or an intact ZIP downloaded from the canonical Acceptora bundle route and extracted outside the target repository. Never install from another remote or mirror. Never apply without the user's explicit acceptance of the exact plan digest. After the first apply, use only the returned installer-owned external `trusted_installer` for later lifecycle commands. The installer never reads the token value, grants MCP trust, or approves hooks. Never print `ACCEPTORA_AGENT_TOKEN`.
+
 When installing, diagnosing discovery, or reviewing client compatibility, read [client-capabilities.md](references/client-capabilities.md) before using client-specific paths, events, or commands. Treat its date and recorded builds as a reviewed compatibility snapshot, not as proof of the provider's latest release.
-
-Use only a fresh checkout of the production `main` branch from `https://github.com/Elvesora/acceptora-agent-skill` or an intact ZIP downloaded from the canonical Acceptora bundle route and extracted outside the target repository. The ZIP's top-level provenance must remain beside the package directory. Never install from another remote or mirror. Run the selected source's `scripts/install.py plan`, inspect the recorded repository, branch, full commit, repository and user-scope mutations, conflicts, pinned executables, and plan SHA-256, and run `apply` only after the user explicitly accepts that exact digest. After the first apply, use only the returned installer-owned external `trusted_installer` for status, the current installation's rollback plan, and rollback. Rollback requires its own exact accepted plan digest. For an update, clone `main` again, accept and apply the old trusted installer's rollback plan, then create and explicitly accept a fresh plan with the new checkout; never run `git pull` in the installed runtime or reuse a pre-rollback plan. The installer never reads the token value, grants MCP trust, or approves hooks.
-
-Run `health_check.py` only from the installer-owned external runtime. Its pinned configuration fixes the target root, Acceptora origin, project ID, client, executables, and the only allowed credential name, `ACCEPTORA_AGENT_TOKEN`. During installation or update, run it with `--confirm-connection` as the final step after client review and installer status. It must first confirm project metadata and all seven normal workflow scopes, public versions, authenticated MCP initialization, the exact eight tools, approval annotations, and every input/output schema digest; only then may it send an exact empty JSON object to the setup-only REST confirmation endpoint that marks the pinned project connected. The endpoint also requires all seven normal workflow scopes. It is not a ninth MCP tool and the check invokes no product write tool. Without the flag, the health check is read-only and never marks the project connected. Repository `.verification/config.json` is non-authoritative setup metadata; never use it to select a credential or network destination. Neither mode prints the credential; both may update ordinary credential-use telemetry.
 
 The installed v1 source adapter is strict Git-only. It binds every eligible tracked worktree byte, index mode/object identity, and non-ignored untracked file; it rejects submodules/gitlinks, unresolved index stages, hidden index flags, unsafe paths, special files, unstable reads, and Git failures instead of falling back to a weaker adapter. Repository `.gitignore` rules and explicitly reviewed `ignored_paths` define project-specific exclusions; do not infer exclusions from a language or framework.
 

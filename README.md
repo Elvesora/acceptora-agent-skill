@@ -5,6 +5,8 @@
 
 The Acceptora Agent Skill connects coding agents to Acceptora's durable manual-verification workflow. It keeps one source-bound acceptance checklist synchronized after software, content, configuration, API, SDK, integration, data, or deployment changes in any programming language, framework, or mixed-stack repository.
 
+> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). From your Acceptora project, export `ACCEPTORA_AGENT_TOKEN`, paste the onboarding prompt into Codex, Claude Code, or Gemini CLI, and approve the exact installation-plan digest.
+
 This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
 
 No agent operation can make a human verification decision or grant final acceptance.
@@ -38,7 +40,7 @@ Machine-readable provider paths, templates, lifecycle events, and reviewed build
 
 ## Install
 
-Follow [SETUP.md](SETUP.md) for source acquisition, credentials, plan review, installation, client checks, health verification, explicit connection confirmation, rollback, upgrades, and REST-only integration.
+Start with [GETTING-STARTED.md](GETTING-STARTED.md). [SETUP.md](SETUP.md) is the security specification for source acquisition, credentials, plan review, installation, client checks, health verification, explicit connection confirmation, rollback, upgrades, and REST-only integration. The installer can omit `--client` when the coding agent is unambiguous and prints a human plan with `--format text`; `--output` still stores JSON, and `apply` still requires the exact plan digest.
 
 The canonical production source and update authority is the `main` branch of:
 
@@ -47,7 +49,7 @@ The canonical production source and update authority is the `main` branch of:
 The signed-in Acceptora onboarding page supports two acquisition paths:
 
 - give its project-specific prompt to Codex, Claude Code, or Gemini CLI; the agent fresh-clones `main` outside the target worktree and performs the mechanical setup; or
-- download `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip` and extract the entire archive outside the target worktree. Keep `acceptora-agent-skill-provenance.json` beside the extracted `verify-generated-work` directory.
+- download `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip` and extract the entire archive outside the target worktree. Keep `acceptora-agent-skill-provenance.json` beside the extracted `acceptora` directory.
 
 The companion manifest at `https://www.acceptora.com/agent-skill/release-manifest.json` records the exact clean `main` commit, source-tree digest, file digests, ZIP byte length, and ZIP SHA-256. The ZIP is a derived convenience snapshot, not a second update authority. Do not install from another remote or run the installer from the target repository.
 
@@ -72,8 +74,9 @@ The installer never reads the token, grants client trust, or approves tools. Rev
 
 ## Package layout
 
-- [`SKILL.md`](SKILL.md) contains the focused agent workflow.
-- [`references/`](references) contains contracts, lifecycle rules, reconciliation guidance, and task-specific patterns loaded only when needed.
+- [`GETTING-STARTED.md`](GETTING-STARTED.md) is the human tutorial.
+- [`SKILL.md`](SKILL.md) is the `acceptora` skill and routes `$acceptora init`, `$acceptora doctor`, and the default completion workflow.
+- [`references/`](references) contains install and doctor commands, contracts, lifecycle rules, reconciliation guidance, and task-specific patterns loaded only when needed.
 - [`scripts/`](scripts) contains deterministic installation, bundle, validation, health, source-manifest, and recovery tooling.
 - [`config/client-profiles.json`](config/client-profiles.json) is the canonical client provider registry; [`adapters/`](adapters) and the remaining [`config/`](config) files contain the referenced integration templates.
 - [`tests/`](tests) covers success, failure, security, source distribution, and cross-client behavior.

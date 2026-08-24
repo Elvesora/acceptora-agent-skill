@@ -611,7 +611,7 @@ def _post_gate(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any
             "Accept": "application/json",
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": f"verify-generated-work/{SKILL_VERSION}",
+            "User-Agent": f"acceptora/{SKILL_VERSION}",
         },
         method="POST",
     )
@@ -845,7 +845,7 @@ def evaluate_completion_gate(event: dict[str, Any], integration: str) -> GateDec
             return GateDecision(outcome, False)
 
         reason = response["reason"]
-        recovery = response["recovery_instruction"] or "Use $verify-generated-work and run the completion gate again."
+        recovery = response["recovery_instruction"] or "Use $acceptora and run the completion gate again."
         feature = response.get("feature_id")
         feature_note = f" Feature: {feature}." if feature else ""
         message = f"Agent Verification gate: {outcome}. {reason}{feature_note} {recovery}"

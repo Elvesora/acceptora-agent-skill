@@ -32,7 +32,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from validate_checklist_payload import find_secret_paths  # noqa: E402
 
 
-ARCHIVE_PREFIX = "verify-generated-work"
+ARCHIVE_PREFIX = "acceptora"
 CANONICAL_REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
 PRODUCTION_BRANCH = "main"
 EMBEDDED_PROVENANCE_FILENAME = "acceptora-agent-skill-provenance.json"
@@ -909,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(_json_bytes(result).decode("utf-8"))
         else:
             sys.stdout.write(
-                f"Built verify-generated-work {result['version']} in {result['dist_directory']}\n"
+                f"Built acceptora {result['version']} in {result['dist_directory']}\n"
                 f"Source tree: {result['source_tree_sha256']}\n"
             )
         return 0

@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- A ten-minute [GETTING-STARTED.md](GETTING-STARTED.md) tutorial for the human install path, leaving [SETUP.md](SETUP.md) as the security specification.
+- Skill command routing for `$acceptora init`, `$acceptora doctor`, and the default completion workflow so completion hooks still reconcile without a menu. The installed skill name is `acceptora`.
+- The downloadable ZIP is `acceptora-<version>.zip` and extracts as `acceptora/` beside `acceptora-agent-skill-provenance.json`.
+- Installer client auto-detection and `--format text` human plans. `--output` still stores the JSON plan; `apply` still requires the exact digest.
 - A central machine-readable provider registry for Codex, Claude Code, and Gemini CLI, consumed by installation, trusted runtime, and release metadata.
 - A dated client capability matrix separating provider-documented support from Acceptora-generated defaults and reviewed build baselines.
 - Optional `evidence_sufficiency` and `blocker_reason` fields that keep proof quality and a `not_run` cause separate from execution outcome and human acceptance.

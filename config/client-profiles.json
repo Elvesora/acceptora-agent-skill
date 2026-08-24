@@ -8,7 +8,7 @@
       "reference_build": "codex-cli 0.147.0",
       "minimum_build": "codex-cli 0.144.0",
       "project_layout": {
-        "skill_directory": ".agents/skills/verify-generated-work",
+        "skill_directory": ".agents/skills/acceptora",
         "instruction_file": "AGENTS.md",
         "instruction_source": "snippets/AGENTS.md.block"
       },
@@ -63,7 +63,7 @@
       "reference_build": "2.1.114",
       "minimum_build": null,
       "project_layout": {
-        "skill_directory": ".claude/skills/verify-generated-work",
+        "skill_directory": ".claude/skills/acceptora",
         "instruction_file": "CLAUDE.md",
         "instruction_source": "snippets/CLAUDE.md.block"
       },
@@ -120,7 +120,7 @@
       "reference_build": "0.56.0",
       "minimum_build": null,
       "project_layout": {
-        "skill_directory": ".gemini/skills/verify-generated-work",
+        "skill_directory": ".gemini/skills/acceptora",
         "instruction_file": "GEMINI.md",
         "instruction_source": "snippets/GEMINI.md.block"
       },

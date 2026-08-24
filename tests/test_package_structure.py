@@ -25,7 +25,7 @@ class PackageStructureTest(unittest.TestCase):
             metadata[key.strip()] = value.strip()
 
         self.assertEqual({"name", "description"}, set(metadata))
-        self.assertEqual("verify-generated-work", metadata["name"])
+        self.assertEqual("acceptora", metadata["name"])
         self.assertRegex(metadata["name"], r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
         self.assertGreater(len(metadata["description"]), 20)
         self.assertLessEqual(len(metadata["description"]), 1024)
@@ -48,6 +48,7 @@ class PackageStructureTest(unittest.TestCase):
             "README.md",
             "SECURITY.md",
             "SETUP.md",
+            "GETTING-STARTED.md",
             "SUPPORT.md",
             "agents/openai.yaml",
             "adapters/codex/hooks.json.example",
@@ -60,6 +61,8 @@ class PackageStructureTest(unittest.TestCase):
             "config/client-profiles.json",
             "config/package-manifest.json",
             "references/client-capabilities.md",
+            "references/init.md",
+            "references/doctor.md",
             "snippets/AGENTS.md.block",
             "snippets/CLAUDE.md.block",
             "snippets/GEMINI.md.block",
@@ -83,9 +86,9 @@ class PackageStructureTest(unittest.TestCase):
     def test_openai_interface_metadata_matches_the_skill_identity(self) -> None:
         metadata = (PACKAGE_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
-        self.assertIn('display_name: "Verify Generated Work"', metadata)
+        self.assertIn('display_name: "Acceptora"', metadata)
         self.assertIn('short_description: "Verify changes in any software stack"', metadata)
-        self.assertIn("Use $verify-generated-work", metadata)
+        self.assertIn("Use $acceptora", metadata)
 
     def test_target_project_defaults_do_not_assume_a_language_or_framework(self) -> None:
         project = json.loads((PACKAGE_ROOT / "config" / "project.example.json").read_text(encoding="utf-8"))
@@ -96,6 +99,71 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("regardless of programming language, framework, build system", skill)
         self.assertIn("Do not assume Laravel, PHP, Composer", skill)
         self.assertIn("not target-application dependencies", setup)
+        self.assertLessEqual(len(skill.splitlines()), 500)
+
+    def test_getting_started_teaches_the_ten_minute_path_without_replacing_setup(self) -> None:
+        getting_started = (PACKAGE_ROOT / "GETTING-STARTED.md").read_text(encoding="utf-8")
+        setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
+        readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+        contributing = (PACKAGE_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+        self.assertIn("What you'll have", getting_started)
+        self.assertIn("ACCEPTORA_AGENT_TOKEN", getting_started)
+        self.assertIn("onboarding", getting_started.casefold())
+        self.assertIn("plan SHA-256", getting_started)
+        self.assertIn("$acceptora", getting_started)
+        self.assertIn("$acceptora init", getting_started)
+        self.assertIn("$acceptora doctor", getting_started)
+        self.assertIn("extracted `acceptora` directory", getting_started)
+        self.assertNotIn("$verify-generated-work", getting_started)
+        self.assertNotIn("extracted `verify-generated-work`", getting_started)
+        self.assertIn("outside the target worktree", getting_started)
+        self.assertIn("[SETUP.md](SETUP.md)", getting_started)
+        self.assertIn("--format text", getting_started)
+        self.assertIn("Omit `--client`", getting_started)
+        self.assertNotIn("npx ", getting_started)
+        self.assertNotIn("npm i", getting_started)
+        self.assertNotRegex(getting_started, r"extract(?:ed)? to (?:your )?project root")
+
+        self.assertIn("## Coding-agent install or update", setup)
+        self.assertIn("exact `plan_sha256`", setup)
+        self.assertIn("`--format text`", setup)
+        self.assertIn("`--client` may be omitted", setup)
+        self.assertIn("[GETTING-STARTED.md](GETTING-STARTED.md)", readme)
+        self.assertIn("references/init.md", contributing)
+        self.assertIn("references/doctor.md", contributing)
+        self.assertIn("completion workflow", contributing)
+
+    def test_skill_routes_init_doctor_and_default_completion(self) -> None:
+        skill = (PACKAGE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        init = (PACKAGE_ROOT / "references" / "init.md").read_text(encoding="utf-8")
+        doctor = (PACKAGE_ROOT / "references" / "doctor.md").read_text(encoding="utf-8")
+
+        self.assertIn("[init](references/init.md)", skill)
+        self.assertIn("[doctor](references/doctor.md)", skill)
+        self.assertIn("completion hook", skill.casefold())
+        self.assertIn("reconcile_checklist", skill)
+        self.assertIn("Never show a command menu instead of reconciling", skill)
+        self.assertNotIn("npx ", skill)
+
+        self.assertIn("[SETUP.md](../SETUP.md)", init)
+        self.assertIn("Coding-agent install or update", init)
+        self.assertIn("exact `plan_sha256`", init)
+        self.assertIn("--confirm-connection", init)
+        self.assertIn("Never approve a plan digest", init)
+        self.assertIn("--format text --output", init)
+        self.assertIn("outside the target", init)
+        self.assertNotIn("npx ", init)
+
+        self.assertIn("health_check.py", doctor)
+        self.assertIn("omit `--confirm-connection`", doctor)
+        self.assertIn("status --client", doctor)
+        self.assertIn("Never print", doctor)
+        self.assertIn("ACCEPTORA_AGENT_TOKEN", doctor)
+        self.assertIn("$acceptora init", doctor)
+        self.assertNotIn("$verify-generated-work", doctor)
+        self.assertNotIn("npx ", doctor)
+        self.assertNotIn("--accept-plan-sha256", doctor)
 
     def test_pattern_anchor_guidance_uses_only_contract_prefixes(self) -> None:
         common_schema = json.loads(
@@ -231,6 +299,7 @@ class PackageStructureTest(unittest.TestCase):
             },
             manifest["distribution"],
         )
+        self.assertEqual("acceptora", manifest["skill"]["name"])
         self.assertEqual("1.1.0", manifest["skill"]["version"])
         self.assertEqual("1.0.0", manifest["integration"]["version"])
         self.assertEqual("1.0.0", manifest["contract"]["version"])
@@ -255,8 +324,10 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("https://www.acceptora.com/agent-skill/release-manifest.json", setup)
         self.assertIn("https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip", setup)
         self.assertIn("acceptora-agent-skill-provenance.json", setup)
+        self.assertIn("beside the `acceptora` directory", setup)
         self.assertIn("generated from one clean `main` commit", setup)
         self.assertIn("downloadable ZIP snapshot", readme)
+        self.assertIn("GETTING-STARTED.md", readme)
         self.assertIn("Acceptora-hosted ZIP derived from a clean `main` commit", security)
         self.assertIn("deterministic ZIP bundle and embedded provenance", contributing)
         self.assertIn("extracted ZIP passes installer plan/apply tests", pull_request_template)
@@ -294,7 +365,7 @@ class PackageStructureTest(unittest.TestCase):
         expected = {
             "codex": {
                 "project_layout": {
-                    "skill_directory": ".agents/skills/verify-generated-work",
+                    "skill_directory": ".agents/skills/acceptora",
                     "instruction_file": "AGENTS.md",
                     "instruction_source": "snippets/AGENTS.md.block",
                 },
@@ -305,7 +376,7 @@ class PackageStructureTest(unittest.TestCase):
             },
             "claude-code": {
                 "project_layout": {
-                    "skill_directory": ".claude/skills/verify-generated-work",
+                    "skill_directory": ".claude/skills/acceptora",
                     "instruction_file": "CLAUDE.md",
                     "instruction_source": "snippets/CLAUDE.md.block",
                 },
@@ -316,7 +387,7 @@ class PackageStructureTest(unittest.TestCase):
             },
             "gemini-cli": {
                 "project_layout": {
-                    "skill_directory": ".gemini/skills/verify-generated-work",
+                    "skill_directory": ".gemini/skills/acceptora",
                     "instruction_file": "GEMINI.md",
                     "instruction_source": "snippets/GEMINI.md.block",
                 },

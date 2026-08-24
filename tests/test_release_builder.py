@@ -159,7 +159,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertEqual("built", first_result["status"])
             self.assertEqual(first_result["source_tree_sha256"], second_result["source_tree_sha256"])
             expected_files = {
-                "verify-generated-work-1.1.0.zip",
+                "acceptora-1.1.0.zip",
                 "release-manifest.json",
                 "SHA256SUMS",
             }
@@ -169,7 +169,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                 self.assertEqual((first_dist / name).read_bytes(), (second_dist / name).read_bytes(), name)
 
             manifest = json.loads((first_dist / "release-manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual("verify-generated-work", manifest["name"])
+            self.assertEqual("acceptora", manifest["name"])
             self.assertEqual("1.1.0", manifest["version"])
             self.assertEqual(
                 {
@@ -205,7 +205,10 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertIn("config/client-profiles.json", paths)
             self.assertIn("references/client-capabilities.md", paths)
             self.assertIn("SETUP.md", paths)
+            self.assertIn("GETTING-STARTED.md", paths)
             self.assertIn("LICENSE", paths)
+            self.assertIn("references/init.md", paths)
+            self.assertIn("references/doctor.md", paths)
             self.assertIn("CHANGELOG.md", paths)
             self.assertNotIn("README.md", paths)
             self.assertNotIn("CONTRIBUTING.md", paths)
@@ -222,10 +225,10 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertFalse(any(path.startswith("tests/") for path in paths))
             self.assertFalse(any(path.endswith(".deferred") for path in paths))
             self.assertFalse(any("__pycache__" in path for path in paths))
-            with zipfile.ZipFile(first_dist / "verify-generated-work-1.1.0.zip") as archive:
+            with zipfile.ZipFile(first_dist / "acceptora-1.1.0.zip") as archive:
                 for path in paths:
                     if path.endswith(".md"):
-                        body = archive.read(f"verify-generated-work/{path}").decode("utf-8")
+                        body = archive.read(f"acceptora/{path}").decode("utf-8")
                         self.assertNotIn("[Unreleased]", body, path)
                         if path == "CHANGELOG.md":
                             self.assertIn("## [1.1.0] - 2026-08-23", body, path)
@@ -239,7 +242,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             for line in (first_dist / "SHA256SUMS").read_text(encoding="ascii").splitlines():
                 digest, name = line.split("  ", 1)
                 checksums[name] = digest
-            self.assertEqual(sha256(first_dist / "verify-generated-work-1.1.0.zip"), checksums["verify-generated-work-1.1.0.zip"])
+            self.assertEqual(sha256(first_dist / "acceptora-1.1.0.zip"), checksums["acceptora-1.1.0.zip"])
             self.assertEqual(sha256(first_dist / "release-manifest.json"), checksums["release-manifest.json"])
 
     def test_clean_canonical_main_builds_identical_directly_extractable_zip_bundles(self) -> None:
@@ -254,7 +257,7 @@ class ReleaseBuilderTest(unittest.TestCase):
 
             self.assertEqual(0, first.returncode, first.stderr)
             self.assertEqual(0, second.returncode, second.stderr)
-            zip_name = "verify-generated-work-1.1.0.zip"
+            zip_name = "acceptora-1.1.0.zip"
             self.assertEqual((first_dist / zip_name).read_bytes(), (second_dist / zip_name).read_bytes())
             self.assertEqual(
                 (first_dist / "release-manifest.json").read_bytes(),
@@ -293,7 +296,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                 manifest["embedded_provenance"]["sha256"],
             )
             self.assertTrue(all(
-                name == "acceptora-agent-skill-provenance.json" or name.startswith("verify-generated-work/")
+                name == "acceptora-agent-skill-provenance.json" or name.startswith("acceptora/")
                 for name in names
             ))
 
@@ -321,13 +324,13 @@ class ReleaseBuilderTest(unittest.TestCase):
             dist = Path(temporary) / "dist"
             result = run_builder(dist)
             self.assertEqual(0, result.returncode, result.stderr)
-            zip_path = dist / "verify-generated-work-1.1.0.zip"
+            zip_path = dist / "acceptora-1.1.0.zip"
 
             with zipfile.ZipFile(zip_path) as archive:
                 infos = archive.infolist()
                 names = [info.filename for info in infos]
                 self.assertEqual(sorted(names), names)
-                self.assertTrue(all(name.startswith("verify-generated-work/") for name in names))
+                self.assertTrue(all(name.startswith("acceptora/") for name in names))
                 self.assertTrue(all(".." not in Path(name).parts for name in names))
                 self.assertTrue(all(not Path(name).is_absolute() for name in names))
                 self.assertTrue(all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in infos))
@@ -339,7 +342,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             source = workspace / "source"
             (source / "config").mkdir(parents=True)
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Test.\n---\n",
+                "---\nname: acceptora\ndescription: Test.\n---\n",
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
@@ -349,7 +352,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                             "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                             "branch": "main",
                         },
-                        "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                        "skill": {"name": "acceptora", "version": "1.0.0"},
                     }
                 ),
                 encoding="utf-8",
@@ -370,9 +373,9 @@ class ReleaseBuilderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             repository = workspace / "repository"
-            source = repository / "packages" / "verify-generated-work"
+            source = repository / "packages" / "acceptora"
             (source / "config").mkdir(parents=True)
-            (source / "SKILL.md").write_text("---\nname: verify-generated-work\ndescription: Test.\n---\n", encoding="utf-8")
+            (source / "SKILL.md").write_text("---\nname: acceptora\ndescription: Test.\n---\n", encoding="utf-8")
             (source / "config" / "package-manifest.json").write_text(
                 json.dumps(
                     {
@@ -380,7 +383,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                             "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                             "branch": "main",
                         },
-                        "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                        "skill": {"name": "acceptora", "version": "1.0.0"},
                         "integration": {"version": "1.0.0"},
                         "contract": {"version": "1.0.0", "mcp_protocol_version": "2025-11-25"},
                     }
@@ -443,10 +446,10 @@ class ReleaseBuilderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             repository = workspace / "repository"
-            source = repository / "packages" / "verify-generated-work"
+            source = repository / "packages" / "acceptora"
             (source / "config").mkdir(parents=True)
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Test release source.\n---\n",
+                "---\nname: acceptora\ndescription: Test release source.\n---\n",
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
@@ -456,7 +459,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                             "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                             "branch": "main",
                         },
-                        "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                        "skill": {"name": "acceptora", "version": "1.0.0"},
                         "integration": {"version": "1.0.0"},
                         "contract": {"version": "1.0.0", "mcp_protocol_version": "2025-11-25"},
                     }
@@ -496,7 +499,7 @@ class ReleaseBuilderTest(unittest.TestCase):
 
             ignored_payload = source / "ignored_payload.py"
             (repository / ".git" / "info" / "exclude").write_text(
-                "packages/verify-generated-work/ignored_payload.py\n",
+                "packages/acceptora/ignored_payload.py\n",
                 encoding="utf-8",
             )
             ignored_payload.write_text("print('must not ship')\n", encoding="utf-8")
@@ -506,18 +509,18 @@ class ReleaseBuilderTest(unittest.TestCase):
             ignored_manifest = json.loads((ignored_dist / "release-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual("clean", ignored_manifest["source_state"])
             self.assertNotIn("ignored_payload.py", [entry["path"] for entry in ignored_manifest["files"]])
-            with zipfile.ZipFile(ignored_dist / "verify-generated-work-1.0.0.zip") as archive:
-                self.assertNotIn("verify-generated-work/ignored_payload.py", archive.namelist())
+            with zipfile.ZipFile(ignored_dist / "acceptora-1.0.0.zip") as archive:
+                self.assertNotIn("acceptora/ignored_payload.py", archive.namelist())
 
             original_blob = subprocess.run(
-                ["git", "-C", str(repository), "rev-parse", "HEAD:packages/verify-generated-work/SKILL.md"],
+                ["git", "-C", str(repository), "rev-parse", "HEAD:packages/acceptora/SKILL.md"],
                 capture_output=True,
                 text=True,
                 check=True,
             ).stdout.strip()
             replacement_blob = subprocess.run(
                 ["git", "-C", str(repository), "hash-object", "-w", "--stdin"],
-                input="---\nname: verify-generated-work\ndescription: Replaced malicious source.\n---\n",
+                input="---\nname: acceptora\ndescription: Replaced malicious source.\n---\n",
                 capture_output=True,
                 text=True,
                 check=True,
@@ -531,13 +534,13 @@ class ReleaseBuilderTest(unittest.TestCase):
             replaced_dist = workspace / "replace-ref-dist"
             replaced = run_builder(replaced_dist, source, source_commit=None, allow_dirty=False)
             self.assertEqual(0, replaced.returncode, replaced.stderr)
-            with zipfile.ZipFile(replaced_dist / "verify-generated-work-1.0.0.zip") as archive:
-                skill_body = archive.read("verify-generated-work/SKILL.md").decode("utf-8")
+            with zipfile.ZipFile(replaced_dist / "acceptora-1.0.0.zip") as archive:
+                skill_body = archive.read("acceptora/SKILL.md").decode("utf-8")
             self.assertIn("description: Test release source.", skill_body)
             self.assertNotIn("Replaced malicious source", skill_body)
 
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Dirty release source.\n---\n",
+                "---\nname: acceptora\ndescription: Dirty release source.\n---\n",
                 encoding="utf-8",
             )
             refused_dist = workspace / "refused-dist"
@@ -570,7 +573,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             source = repository / "package"
             (source / "config").mkdir(parents=True)
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Test release source.\n---\n",
+                "---\nname: acceptora\ndescription: Test release source.\n---\n",
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
@@ -579,7 +582,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                         "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                         "branch": "main",
                     },
-                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                    "skill": {"name": "acceptora", "version": "1.0.0"},
                 }),
                 encoding="utf-8",
             )
@@ -641,7 +644,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             source = workspace / "source"
             (source / "config").mkdir(parents=True)
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Test release source.\n---\n",
+                "---\nname: acceptora\ndescription: Test release source.\n---\n",
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
@@ -650,7 +653,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                         "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                         "branch": "main",
                     },
-                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                    "skill": {"name": "acceptora", "version": "1.0.0"},
                 }),
                 encoding="utf-8",
             )
@@ -677,7 +680,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             (source / "config").mkdir(parents=True)
             (repository / ".git").mkdir()
             (source / "SKILL.md").write_text(
-                "---\nname: verify-generated-work\ndescription: Test release source.\n---\n",
+                "---\nname: acceptora\ndescription: Test release source.\n---\n",
                 encoding="utf-8",
             )
             (source / "config" / "package-manifest.json").write_text(
@@ -686,7 +689,7 @@ class ReleaseBuilderTest(unittest.TestCase):
                         "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
                         "branch": "main",
                     },
-                    "skill": {"name": "verify-generated-work", "version": "1.0.0"},
+                    "skill": {"name": "acceptora", "version": "1.0.0"},
                 }),
                 encoding="utf-8",
             )
