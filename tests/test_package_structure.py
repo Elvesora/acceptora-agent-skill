@@ -128,8 +128,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("outside the target worktree", getting_started)
         self.assertIn("[SETUP.md](SETUP.md)", getting_started)
         self.assertIn("--format text", getting_started)
-        self.assertIn("Pass `--client` explicitly", getting_started)
-        self.assertIn("mandatory for Antigravity CLI", getting_started)
+        self.assertIn("three supported `--client` values explicitly", getting_started)
+        self.assertIn("do not create or apply an `antigravity-cli` plan", getting_started)
         self.assertNotIn("npx ", getting_started)
         self.assertNotIn("npm i", getting_started)
         self.assertNotRegex(getting_started, r"extract(?:ed)? to (?:your )?project root")
@@ -138,7 +138,10 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("exact `plan_sha256`", setup)
         self.assertIn("`--format text`", setup)
         self.assertIn("Pass `--client` explicitly in every reviewed installation", setup)
-        self.assertIn("mandatory for Antigravity CLI", setup)
+        self.assertIn(
+            "not supported for new installation, reconnection, upgrade, or project work",
+            setup,
+        )
         self.assertIn("[GETTING-STARTED.md](GETTING-STARTED.md)", readme)
         self.assertIn("references/init.md", contributing)
         self.assertIn("references/doctor.md", contributing)
