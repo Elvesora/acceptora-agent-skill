@@ -6,7 +6,7 @@
   },
   "skill": {
     "name": "acceptora",
-    "version": "1.1.0"
+    "version": "1.2.3"
   },
   "integration": {
     "name": "verify-generated-work",
@@ -37,14 +37,14 @@
       "name": "get_feature_context",
       "required_scope": "features:read",
       "annotations": {"readOnlyHint": true, "openWorldHint": false},
-      "input_schema_sha256": "sha256:ed790ed2728ab9bec2bd4ce19416dc34d8601bdc24c007062ffd1d04be27f3e3",
-      "output_schema_sha256": "sha256:5191d0b38016299ef8be107e4377c2003f390c6364e39464b6af9d7305d00945"
+      "input_schema_sha256": "sha256:126917e9de98343f07fa2f6e0abb984d0a8c82ccbd32220b5a8861609ff630a5",
+      "output_schema_sha256": "sha256:9726cfdec6396d531237d0860594241937f3d1ffc48f9bbab8b175da65f48292"
     },
     {
       "name": "reconcile_checklist",
       "required_scope": "checklists:write",
       "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:fad439c2d391b76f47414c01835db883c60fee67358b85c5e83ea7bd7688011b",
+      "input_schema_sha256": "sha256:19b440c209bc4c703fc308e607b32bdd2fbf084599fe4721f6f9d9a1feb681b2",
       "output_schema_sha256": "sha256:5251c962bfe3bfaa99b445dc54c11e5c24182219d55cb83434c34e2d42f3b39b"
     },
     {
@@ -79,7 +79,7 @@
       "name": "record_verification_exception",
       "required_scope": "exceptions:write",
       "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:6ea5ca31f5231846a60301a12d5c32501f3ce82d0a7f10a87ac52701f6b5869d",
+      "input_schema_sha256": "sha256:634ab6278afc93094d8903def582a5e9dc24a6cff749503f28bb1753e0bbe0a5",
       "output_schema_sha256": "sha256:81b5c4dfc43c9bee8212cec2f9cfa1865bba60d4bc80b7c960ffc33d7b2edecd"
     }
   ]

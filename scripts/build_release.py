@@ -37,6 +37,8 @@ CANONICAL_REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
 PRODUCTION_BRANCH = "main"
 EMBEDDED_PROVENANCE_FILENAME = "acceptora-agent-skill-provenance.json"
 CLIENT_REGISTRY_PATH = "config/client-profiles.json"
+LEGACY_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
+PROJECT_TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_"
 EXCLUDED_PARTS = {".git", ".github", ".pytest_cache", "__pycache__", "dist", "tests", ".verification"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".deferred"}
 EXCLUDED_FILES = {
@@ -340,6 +342,16 @@ def _load_client_registry(files: list[dict[str, Any]]) -> dict[str, Any]:
         minimum_build = profile.get("minimum_build")
         if minimum_build is not None and (not isinstance(minimum_build, str) or not minimum_build.strip()):
             raise ReleaseError(f"The client profile has an invalid minimum build: {client}")
+        install_supported = profile.get("install_supported")
+        unsupported_reason = profile.get("unsupported_reason")
+        if type(install_supported) is not bool:
+            raise ReleaseError(f"The client profile has no explicit installation support status: {client}")
+        if install_supported and unsupported_reason is not None:
+            raise ReleaseError(f"The supported client profile has an unsupported reason: {client}")
+        if not install_supported and (
+            not isinstance(unsupported_reason, str) or not unsupported_reason.strip()
+        ):
+            raise ReleaseError(f"The unsupported client profile has no reason: {client}")
 
         project = profile.get("project_layout")
         user_config = profile.get("user_config")
@@ -387,7 +399,8 @@ def _load_client_registry(files: list[dict[str, Any]]) -> dict[str, Any]:
         if (
             not isinstance(mcp, dict)
             or not isinstance(mcp.get("path"), str)
-            or mcp.get("renderer") not in {"codex_toml", "claude_json", "gemini_json"}
+            or mcp.get("renderer")
+            not in {"codex_toml", "claude_json", "gemini_json", "antigravity_stdio_json"}
         ):
             raise ReleaseError(f"The client profile has an invalid MCP template: {client}")
         referenced_sources.append(mcp["path"])
@@ -445,7 +458,12 @@ def _validated_git_executable(source_root: Path) -> Path | None:
 
 
 def _run_git(executable: Path, source_root: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment: dict[str, str] = {}
+    for key in os.environ:
+        normalized = key.upper()
+        if normalized == LEGACY_TOKEN_ENV or normalized.startswith(("GIT_", PROJECT_TOKEN_ENV_PREFIX)):
+            continue
+        environment[key] = os.environ[key]
     environment.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -804,7 +822,11 @@ def build_release(
             **provenance,
             "source_tree_sha256": source_tree_sha256,
             "client_capabilities_reviewed_on": client_registry["capabilities_reviewed_on"],
-            "supported_clients": [profile["id"] for profile in client_profiles],
+            "supported_clients": [
+                profile["id"]
+                for profile in client_profiles
+                if profile.get("install_supported") is True
+            ],
             "reference_client_builds": {
                 profile["id"]: profile["reference_build"]
                 for profile in client_profiles

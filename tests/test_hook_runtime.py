@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,8 +25,33 @@ HOOK_RUNTIME = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = HOOK_RUNTIME
 SPEC.loader.exec_module(HOOK_RUNTIME)
 SOURCE_MANIFEST = sys.modules["build_source_manifest"]
+INSTRUCTION_READER = sys.modules["read_instruction_snapshot"]
 FEATURE_ID = "feat_01J00000000000000000000001"
 VALID_TOKEN = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAV_" + ("A" * 48)
+PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+
+def verification_instructions(*, account_revision: int = 4, project_revision: int = 2) -> dict[str, object]:
+    digest_payload: dict[str, object] = {
+        "schema_version": "1.0",
+        "account_revision": account_revision,
+        "project_revision": project_revision,
+        "instructions": {
+            "analysis_guidance": "OWNER-ANALYSIS-GUIDANCE",
+            "manual_verification_guidance": "Use the exact generated feature URL.",
+            "test_data_guidance": None,
+        },
+        "sources": {
+            "analysis_guidance": "account",
+            "manual_verification_guidance": "project",
+            "test_data_guidance": "default",
+        },
+    }
+    return {
+        **digest_payload,
+        "effective_digest": INSTRUCTION_READER.sha256_digest(digest_payload),
+        "configured": True,
+    }
 
 
 def gate_response(payload: dict[str, object], **overrides: object) -> dict[str, object]:
@@ -84,6 +110,9 @@ class RedirectSourceHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def do_GET(self) -> None:  # noqa: N802
+        self.do_POST()
+
     def log_message(self, format: str, *args: object) -> None:
         return
 
@@ -134,6 +163,32 @@ class TokenReasonGateHandler(BaseHTTPRequestHandler):
         self.send_response(503, self.server.token)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class ProjectMetadataServer(ThreadingHTTPServer):
+    response: dict[str, object]
+    requests: list[dict[str, str | None]]
+
+
+class ProjectMetadataHandler(BaseHTTPRequestHandler):
+    server: ProjectMetadataServer
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.server.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+            }
+        )
+        encoded = json.dumps(self.server.response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -193,7 +248,155 @@ def token_reason_gate_server(token: str) -> Iterator[tuple[str, TokenReasonServe
         thread.join(timeout=2)
 
 
+@contextlib.contextmanager
+def project_metadata_server() -> Iterator[tuple[str, ProjectMetadataServer]]:
+    server = ProjectMetadataServer(("127.0.0.1", 0), ProjectMetadataHandler)
+    server.response = {
+        "project_id": PROJECT_ID,
+        "verification_instructions": verification_instructions(),
+    }
+    server.requests = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 class CompletionGatePayloadTest(unittest.TestCase):
+    def test_instruction_preflight_writes_and_rereads_one_atomic_external_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, project_metadata_server() as (base_url, server):
+            workspace = Path(temporary)
+            target = workspace / "target"
+            target.mkdir()
+            runtime = workspace / "external-runtime"
+            config_path = runtime / "config" / "runtime-config.json"
+            reader_path = runtime / "scripts" / "read_instruction_snapshot.py"
+            config_path.parent.mkdir(parents=True)
+            reader_path.parent.mkdir(parents=True)
+            config_path.write_text("{}\n", encoding="utf-8")
+            shutil.copy2(PACKAGE_ROOT / "scripts" / "read_instruction_snapshot.py", reader_path)
+            token_env = f"ACCEPTORA_AGENT_TOKEN_{PROJECT_ID.upper()}"
+            config = {
+                "enabled": True,
+                "config_source": "installer_owned_external_runtime",
+                "client": "codex",
+                "project_id": PROJECT_ID,
+                "token_env": token_env,
+                "rest_base_url": f"{base_url}/api/v1/integrations",
+                "timeout_seconds": 2,
+                "retry_attempts": 1,
+                "python_executable": str(Path(sys.executable).resolve()),
+            }
+            event = {
+                "cwd": str(target),
+                "session_id": "instruction-preflight",
+                "hook_event_name": "UserPromptSubmit",
+            }
+
+            with (
+                patch.dict(os.environ, {token_env: VALID_TOKEN}, clear=False),
+                patch.object(HOOK_RUNTIME, "_project_root", return_value=target),
+                patch.object(HOOK_RUNTIME, "load_config", return_value=config),
+                patch.object(HOOK_RUNTIME, "_config_path", return_value=config_path),
+            ):
+                first = HOOK_RUNTIME.prepare_verification_instructions(event, "codex")
+                assert first is not None
+                first_directive = HOOK_RUNTIME.instruction_additional_context(first)
+
+                self.assertTrue(first.path.is_file())
+                self.assertIn(PROJECT_ID, first.path.name)
+                self.assertNotIn(VALID_TOKEN, first.path.name)
+                self.assertNotIn("OWNER-ANALYSIS-GUIDANCE", first_directive)
+                self.assertIn("-B", first_directive)
+                self.assertIn("-I", first_directive)
+                self.assertIn("get_feature_context", first_directive)
+                if os.name != "nt":
+                    self.assertEqual(0o600, first.path.stat().st_mode & 0o777)
+
+                read_first = subprocess.run(
+                    list(first.reader_argv),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, read_first.returncode, read_first.stdout + read_first.stderr)
+                self.assertEqual(
+                    "OWNER-ANALYSIS-GUIDANCE",
+                    json.loads(read_first.stdout)["instructions"]["analysis_guidance"],
+                )
+
+                server.response["verification_instructions"] = verification_instructions(account_revision=5)
+                second = HOOK_RUNTIME.prepare_verification_instructions(event, "codex")
+                assert second is not None
+
+                self.assertEqual(first.path, second.path)
+                self.assertEqual(5, second.account_revision)
+                stale_read = subprocess.run(
+                    list(first.reader_argv),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(1, stale_read.returncode)
+                fresh_read = subprocess.run(
+                    list(second.reader_argv),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, fresh_read.returncode, fresh_read.stdout + fresh_read.stderr)
+
+                reader_path.unlink()
+                with self.assertRaisesRegex(HOOK_RUNTIME.HookRuntimeError, "reader is unavailable"):
+                    HOOK_RUNTIME.prepare_verification_instructions(event, "codex")
+                self.assertFalse(second.path.exists())
+                shutil.copy2(PACKAGE_ROOT / "scripts" / "read_instruction_snapshot.py", reader_path)
+
+                server.response["verification_instructions"] = {
+                    **verification_instructions(account_revision=6),
+                    "effective_digest": "sha256:" + ("f" * 64),
+                }
+                with self.assertRaisesRegex(HOOK_RUNTIME.HookRuntimeError, "effective_digest"):
+                    HOOK_RUNTIME.prepare_verification_instructions(event, "codex")
+                self.assertFalse(second.path.exists())
+
+            self.assertEqual(3, len(server.requests))
+            self.assertTrue(
+                all(request["path"] == "/api/v1/integrations/project" for request in server.requests)
+            )
+            self.assertTrue(
+                all(request["authorization"] == f"Bearer {VALID_TOKEN}" for request in server.requests)
+            )
+            bytecode = [
+                path for path in runtime.rglob("*")
+                if path.name == "__pycache__" or path.suffix.lower() in {".pyc", ".pyo"}
+            ]
+            self.assertEqual([], bytecode)
+
+    def test_instruction_project_metadata_redirect_is_not_followed_with_authorization(self) -> None:
+        token_env = f"ACCEPTORA_AGENT_TOKEN_{PROJECT_ID.upper()}"
+        with redirect_servers() as (_, source, destination), patch.dict(
+            os.environ,
+            {token_env: VALID_TOKEN},
+            clear=False,
+        ):
+            config = {
+                "token_env": token_env,
+                "rest_base_url": f"http://127.0.0.1:{source.server_port}/api/v1/integrations",
+                "timeout_seconds": 2,
+                "retry_attempts": 1,
+            }
+
+            with self.assertRaisesRegex(HOOK_RUNTIME.HookRuntimeError, "HTTP 302"):
+                HOOK_RUNTIME._fetch_project_metadata(config)
+
+        self.assertEqual([f"Bearer {VALID_TOKEN}"], source.state["authorizations"])
+        self.assertEqual([], destination.state["authorizations"])
+
     def test_source_paths_preserve_leading_dots_and_reject_unsafe_segments(self) -> None:
         self.assertEqual(
             ".github/workflows/verify.yml",
@@ -202,6 +405,70 @@ class CompletionGatePayloadTest(unittest.TestCase):
         for path in ("../escape", "nested/../escape", "/absolute", "C:/absolute"):
             with self.subTest(path=path), self.assertRaises(SOURCE_MANIFEST.ManifestError):
                 SOURCE_MANIFEST._normalise_relative(path)
+
+    def test_windows_local_repository_locators_use_forward_slashes(self) -> None:
+        cases = {
+            r"C:\laragon\www\example": "C:/laragon/www/example",
+            r"c:\laragon\www\example": "C:/laragon/www/example",
+            "D:/work/example": "D:/work/example",
+            r"\\server\share\example": "//server/share/example",
+            "//server/share/example": "//server/share/example",
+        }
+
+        for locator, expected in cases.items():
+            with self.subTest(locator=locator):
+                self.assertEqual(expected, SOURCE_MANIFEST.canonicalize_repository_locator(locator))
+
+    def test_repository_locator_canonicalization_preserves_urls_scp_and_nonabsolute_paths(self) -> None:
+        self.assertEqual(
+            "https://example.test:8443/org/repository.git",
+            SOURCE_MANIFEST.canonicalize_repository_locator(
+                "https://owner:secret@example.test:8443/org/repository.git?token=secret#fragment"
+            ),
+        )
+        self.assertEqual(
+            r"git@example.test:org\repository.git",
+            SOURCE_MANIFEST.canonicalize_repository_locator(r"git@example.test:org\repository.git"),
+        )
+
+        for locator in (r"C:relative\repository", r"relative\repository", r"\server\share"):
+            with self.subTest(locator=locator):
+                self.assertEqual(locator, SOURCE_MANIFEST.canonicalize_repository_locator(locator))
+
+    def test_git_capture_canonicalizes_windows_local_remote_without_digest_drift(self) -> None:
+        for raw_locator, canonical_locator in (
+            (r"C:\laragon\www\example", "C:/laragon/www/example"),
+            (r"c:\laragon\www\example", "C:/laragon/www/example"),
+            (r"\\server\share\example", "//server/share/example"),
+        ):
+            with self.subTest(locator=raw_locator), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "README.md").write_text("stable\n", encoding="utf-8")
+                initialize_git(root)
+                run_git(root, "add", ".")
+                run_git(root, "commit", "-m", "baseline")
+                run_git(root, "remote", "add", "origin", raw_locator)
+
+                baseline = SOURCE_MANIFEST.capture_snapshot(root, "git")
+                run_git(root, "remote", "set-url", "origin", canonical_locator)
+                current = SOURCE_MANIFEST.capture_snapshot(root, "git")
+                comparison = SOURCE_MANIFEST.compare_with_baseline(baseline, root)
+
+                self.assertEqual(canonical_locator, baseline["repository"])
+                self.assertEqual(canonical_locator, current["repository"])
+                self.assertEqual(baseline["source_digest"], current["source_digest"])
+                self.assertEqual([], comparison["entries"])
+                self.assertEqual(
+                    SOURCE_MANIFEST.digest_value(
+                        {
+                            "repository": canonical_locator,
+                            "base_source_digest": baseline["source_digest"],
+                            "current_source_digest": current["source_digest"],
+                            "entries": [],
+                        }
+                    ),
+                    comparison["changed_surface_digest"],
+                )
 
     def test_git_dotfile_changes_preserve_anchor_and_bind_exact_content(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -756,6 +1023,7 @@ class CompletionGatePayloadTest(unittest.TestCase):
         fixture = json.loads(
             (PACKAGE_ROOT / "tests" / "fixtures" / "hook-gate-payload.json").read_text(encoding="utf-8")
         )
+        fixture["versions"]["skill_version"] = "1.2.3"
 
         self.assertEqual(fixture, payload)
         self.assertEqual(
@@ -779,7 +1047,7 @@ class CompletionGatePayloadTest(unittest.TestCase):
         self.assertEqual(f"sha256:{base_digest}", payload["baseline_source_digest"])
         self.assertEqual(f"sha256:{current_digest}", payload["current_source_digest"])
         self.assertEqual("git-v1", payload["adapter_kind"])
-        self.assertEqual("1.0.0", payload["adapter_version"])
+        self.assertEqual("1.0.1", payload["adapter_version"])
         self.assertEqual("base-revision", payload["current_source_descriptor"]["base_revision"])
         self.assertEqual("modified", payload["source_manifest"]["entries"][0]["change_kind"])
         self.assertEqual(f"sha256:{content_digest}", payload["source_manifest"]["entries"][0]["content_digest"])
@@ -787,8 +1055,113 @@ class CompletionGatePayloadTest(unittest.TestCase):
         self.assertNotIn("changed_surface_manifest", payload)
         self.assertNotIn("explicit_feature_id", payload)
 
+    def test_gate_mapping_canonicalizes_equivalent_windows_repository_locators(self) -> None:
+        manifest = {
+            "repository": r"C:\laragon\www\example",
+            "base": {
+                "adapter": "git-v1",
+                "repository": r"C:\laragon\www\example",
+                "head": "base-revision",
+                "source_digest": "a" * 64,
+            },
+            "current": {
+                "adapter": "git-v1",
+                "repository": "C:/laragon/www/example",
+                "head": "current-revision",
+                "source_digest": "b" * 64,
+            },
+            "entries": [],
+        }
+
+        payload = HOOK_RUNTIME.build_completion_gate_payload(
+            {"project_id": PROJECT_ID},
+            manifest,
+            {"session_id": "windows-locator"},
+            "codex",
+        )
+
+        self.assertEqual("git:C:/laragon/www/example", payload["source_identity"])
+        self.assertEqual(
+            "C:/laragon/www/example",
+            payload["baseline_source_descriptor"]["source_locator"],
+        )
+        self.assertEqual(
+            "C:/laragon/www/example",
+            payload["current_source_descriptor"]["source_locator"],
+        )
+        self.assertEqual("1.0.1", payload["adapter_version"])
+
+    def test_gate_mapping_rejects_distinct_repository_locators(self) -> None:
+        manifest = {
+            "repository": r"C:\laragon\www\example",
+            "base": {
+                "adapter": "git-v1",
+                "repository": r"C:\laragon\www\example",
+                "head": "base-revision",
+                "source_digest": "a" * 64,
+            },
+            "current": {
+                "adapter": "git-v1",
+                "repository": r"D:\laragon\www\example",
+                "head": "current-revision",
+                "source_digest": "b" * 64,
+            },
+            "entries": [],
+        }
+
+        with self.assertRaisesRegex(HOOK_RUNTIME.HookRuntimeError, "same repository"):
+            HOOK_RUNTIME.build_completion_gate_payload(
+                {"project_id": PROJECT_ID},
+                manifest,
+                {"session_id": "windows-locator-mismatch"},
+                "codex",
+            )
+
+        manifest["current"]["repository"] = "C:/laragon/www/example"
+        manifest["repository"] = r"D:\laragon\www\example"
+        with self.assertRaisesRegex(HOOK_RUNTIME.HookRuntimeError, "manifest repository"):
+            HOOK_RUNTIME.build_completion_gate_payload(
+                {"project_id": PROJECT_ID},
+                manifest,
+                {"session_id": "windows-manifest-locator-mismatch"},
+                "codex",
+            )
+
+    def test_gate_mapping_requires_the_authoritative_manifest_repository(self) -> None:
+        manifest = {
+            "base": {
+                "adapter": "git-v1",
+                "repository": "example/sdk-validation",
+                "head": "base-revision",
+                "source_digest": "a" * 64,
+            },
+            "current": {
+                "adapter": "git-v1",
+                "repository": "example/sdk-validation",
+                "head": "current-revision",
+                "source_digest": "b" * 64,
+            },
+            "entries": [],
+        }
+
+        for repository in (None, "", "   "):
+            candidate = dict(manifest)
+            if repository is not None:
+                candidate["repository"] = repository
+            with self.subTest(repository=repository), self.assertRaisesRegex(
+                HOOK_RUNTIME.HookRuntimeError,
+                "manifest repository is missing or empty",
+            ):
+                HOOK_RUNTIME.build_completion_gate_payload(
+                    {"project_id": PROJECT_ID},
+                    candidate,
+                    {"session_id": "missing-manifest-locator"},
+                    "codex",
+                )
+
     def test_rejects_an_invalid_adapter_digest_before_network_io(self) -> None:
         manifest = {
+            "repository": "example/sdk-validation",
             "base": {
                 "adapter": "git-v1",
                 "repository": "example/sdk-validation",
@@ -1106,6 +1479,7 @@ class CompletionGatePayloadTest(unittest.TestCase):
             "codex": "UserPromptSubmit",
             "claude-code": "UserPromptSubmit",
             "gemini-cli": "BeforeAgent",
+            "antigravity-cli": "PreInvocation",
         }
         for integration, prompt_event in cases.items():
             with self.subTest(integration=integration), tempfile.TemporaryDirectory() as temporary:

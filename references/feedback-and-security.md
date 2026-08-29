@@ -13,7 +13,7 @@ For every open declined, blocked, or commented item:
 5. Map it to intended changed surfaces.
 6. Fix and verify the root cause.
 7. Record a specific resolution only when actually addressed.
-8. Reconcile the complete checklist against the same resulting source digest.
+8. Reconcile the complete checklist against the same resulting source digest and exact manifest repository locator used by `address_feedback`.
 
 Leave ambiguous, rejected, conflicting, or unfixed feedback open with an honest explanation.
 

@@ -4,6 +4,10 @@
 
 Provide a human-readable title, stable feature ID, project, status, intent, expected outcome, changed scope, source revision, sources, environment/base URL, actual automated evidence, estimated manual time, reconciliation attribution, and visible known limits.
 
+Apply the freshly read owner guidance according to [verification-instructions.md](verification-instructions.md). When authorized guidance asks for seeded state, IDs, or links, use actual observed synthetic values: place the safe real URL in `target`, usable fixture values and generated IDs in `test_data`, and cleanup plus side-effect details in the step. Never fabricate a handle or copy instruction bodies into the checklist.
+
+When `get_feature_context` was requested with `checklist_definitions`, treat its `checklist_sections` and every active/retired item's complete immutable `definition` as authoritative. Retain or update from that full definition—including `target` and `test_data`—so omitted summary fields cannot silently erase an existing step.
+
 Select only relevant sections from this order:
 
 1. Scope and expected outcome

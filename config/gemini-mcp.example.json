@@ -4,7 +4,7 @@
     "acceptora": {
       "httpUrl": "https://verify.example.test/mcp",
       "headers": {
-        "Authorization": "Bearer ${ACCEPTORA_AGENT_TOKEN}"
+        "Authorization": "Bearer ${ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID}"
       },
       "timeout": 600000,
       "trust": false

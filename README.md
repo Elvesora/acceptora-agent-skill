@@ -5,9 +5,9 @@
 
 The Acceptora Agent Skill connects coding agents to Acceptora's durable manual-verification workflow. It keeps one source-bound acceptance checklist synchronized after software, content, configuration, API, SDK, integration, data, or deployment changes in any programming language, framework, or mixed-stack repository.
 
-> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). From your Acceptora project, export `ACCEPTORA_AGENT_TOKEN`, paste the onboarding prompt into Codex, Claude Code, or Gemini CLI, and approve the exact installation-plan digest.
+> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). From your Acceptora project, export its project-specific `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable, paste the onboarding prompt into Codex, Claude Code, or a supported Gemini CLI environment, and approve the exact installation-plan digest.
 
-This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
+This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It retains the Antigravity CLI profile only so an existing installation can be inspected and rolled back. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
 
 No agent operation can make a human verification decision or grant final acceptance.
 
@@ -16,11 +16,12 @@ No agent operation can make a human verification decision or grant final accepta
 - Deterministic Git source manifests that bind the checklist to the reviewed revision without language- or framework-specific path assumptions.
 - Reconciliation that preserves human decisions and reopens only materially affected checks.
 - Structured automated evidence that separates execution outcome, proof sufficiency, and `not_run` blocker reason without granting acceptance.
-- Completion hooks for Codex, Claude Code, and Gemini CLI with bounded, visible fail-open behavior.
-- Session-start checks that compare the installed commit with the production `main` branch and notify without fetching or applying updates.
+- Authenticated task-start hooks for Codex, Claude Code, and Gemini CLI that fetch owner verification guidance into a private external snapshot, expose only a trusted-reader directive to the model, and fail closed on prompt events when the required reread cannot be completed.
+- Completion hooks for Codex, Claude Code, and Gemini CLI with bounded, visible fail-open behavior after the task-start instruction boundary has succeeded.
+- Supported-client task-start checks that compare the installed commit with the production `main` branch and notify without fetching or applying updates.
 - A deterministic downloadable ZIP snapshot whose embedded provenance binds it to one clean production `main` commit.
-- Streamable HTTP MCP configuration plus a language-neutral [REST API contract](references/rest-api-contract.md).
-- Plan-and-apply installation with exact digest acceptance, conflict detection, status, and digest-bound rollback.
+- Streamable HTTP MCP configuration and a language-neutral [REST API contract](references/rest-api-contract.md).
+- Supported-client plan-and-apply installation with exact digest acceptance, conflict detection, status, and digest-bound rollback.
 - A pinned external runtime for health checks, hooks, recovery, and lifecycle commands.
 - Secret rejection, no-follow redirect behavior, bounded network payloads, and offline recovery.
 
@@ -40,7 +41,7 @@ Machine-readable provider paths, templates, lifecycle events, and reviewed build
 
 ## Install
 
-Start with [GETTING-STARTED.md](GETTING-STARTED.md). [SETUP.md](SETUP.md) is the security specification for source acquisition, credentials, plan review, installation, client checks, health verification, explicit connection confirmation, rollback, upgrades, and REST-only integration. The installer can omit `--client` when the coding agent is unambiguous and prints a human plan with `--format text`; `--output` still stores JSON, and `apply` still requires the exact plan digest.
+Start with [GETTING-STARTED.md](GETTING-STARTED.md). [SETUP.md](SETUP.md) is the security specification for source acquisition, credentials, plan review, installation, client checks, health verification, explicit connection confirmation, rollback, upgrades, and REST-only integration. Public install commands pass an explicit supported `--client`. `--format text` prints a human plan, `--output` stores the JSON plan, and `apply` still requires the exact plan digest. Do not create or apply a new Antigravity plan, reconnect it, or upgrade it.
 
 The canonical production source and update authority is the `main` branch of:
 
@@ -48,7 +49,7 @@ The canonical production source and update authority is the `main` branch of:
 
 The signed-in Acceptora onboarding page supports two acquisition paths:
 
-- give its project-specific prompt to Codex, Claude Code, or Gemini CLI; the agent fresh-clones `main` outside the target worktree and performs the mechanical setup; or
+- give its project-specific prompt to Codex, Claude Code, or a supported Gemini CLI environment; the agent fresh-clones `main` outside the target worktree and performs the mechanical setup; or
 - download `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip` and extract the entire archive outside the target worktree. Keep `acceptora-agent-skill-provenance.json` beside the extracted `acceptora` directory.
 
 The companion manifest at `https://www.acceptora.com/agent-skill/release-manifest.json` records the exact clean `main` commit, source-tree digest, file digests, ZIP byte length, and ZIP SHA-256. The ZIP is a derived convenience snapshot, not a second update authority. Do not install from another remote or run the installer from the target repository.
@@ -64,7 +65,17 @@ The secure installation sequence is:
 
 ## Supported integrations
 
-Codex, Claude Code, and Gemini CLI are implemented through the central [client provider registry](config/client-profiles.json). Review the dated [capability matrix](references/client-capabilities.md) for provider support, generated paths, MCP behavior, lifecycle events, discovery checks, and the official documentation used for the review. Configuration examples live in [`config/`](config), and client hook adapters live in [`adapters/`](adapters).
+Codex, Claude Code, and Gemini CLI are the supported integrations. Their provider paths, templates, and lifecycle events are implemented through the central [client provider registry](config/client-profiles.json). Review the dated [capability matrix](references/client-capabilities.md) for support status, generated paths, MCP behavior, lifecycle events, discovery checks, and the official documentation used for the review. Configuration examples live in [`config/`](config), and client hook adapters live in [`adapters/`](adapters).
+
+Antigravity CLI `1.1.22` is not a supported Acceptora lifecycle client. A real headless Windows smoke confirmed that Antigravity loaded `hooks.json` but did not dispatch either the configured `PreInvocation` or `Stop` handler. Hook visibility and direct execution of a generated command therefore do not prove lifecycle operation. The retained Antigravity profile is for `status`, `rollback-plan`, and `rollback` of an existing receipt only.
+
+Google directs individual Google-account users away from Gemini CLI to Antigravity, but that does not make the current Antigravity lifecycle usable by Acceptora. Use Codex, Claude Code, or Gemini CLI authenticated through a Gemini Code Assist Standard or Enterprise license, a supported paid API key, or Vertex AI. There is currently no supported Acceptora Antigravity installation path for individual Google-account OAuth. See Google's [consumer-account deprecation](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals), [transition announcement](https://developers.googleblog.com/en/an-important-update-transitioning-gemini-cli-to-antigravity-cli/), [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration/), and [Gemini CLI authentication guide](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx).
+
+## Multiple repositories and projects
+
+Install the skill separately in every target Git worktree. The skill and managed instruction block are project-local; the external runtime, hooks, and MCP configuration are user-scoped and merged under a target-specific identity. One client/worktree pair binds to one Acceptora project. Different worktrees and projects can coexist in the same client configuration, and one installation can be rolled back without removing another installation or unrelated user settings.
+
+The credential variable is derived from the Acceptora project ID. Repositories bound to the same Acceptora project reuse the same variable name; different projects use different names. A client process can inherit every project token exported to it, so use a separate process with only the required token when stronger project isolation is needed.
 
 ## Security boundary
 
@@ -103,7 +114,7 @@ The second command must print `false`. This does not change the user's global Gi
 A clean production checkout can also verify the exact downloadable bundle shape:
 
 ```text
-python -I scripts/build_release.py --dist-dir "<new-directory-outside-this-checkout>" --source-commit "<full-HEAD-commit>"
+python -B -I scripts/build_release.py --dist-dir "<new-directory-outside-this-checkout>" --source-commit "<full-HEAD-commit>"
 ```
 
 The builder refuses a publishable bundle from dirty or non-Git source and emits one ZIP, its external manifest, and `SHA256SUMS`.

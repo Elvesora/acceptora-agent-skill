@@ -12,8 +12,11 @@ Use this order:
 
 Never bind or merge from fuzzy title/description similarity. Treat default/shared branches as non-authoritative. Surface conflicting aliases as ambiguity.
 
+The deterministic manifest's exact `repository` value is the source-locator authority for the whole workflow. Reuse it unchanged for feature resolution, reconciliation, feedback resolution, a verification exception, and the completion gate. Never reconstruct source identity from `cwd`, `Path.resolve()`, the worktree folder name, or another Git query; Windows drive-absolute and UNC remotes are already canonicalized by the source adapter.
+
 ## Preserve stable item identity
 
+- Start from the complete immutable `definition` returned for each active or retired item by the `checklist_definitions` projection, plus its returned `checklist_sections`; preserve every unchanged field, including `target` and `test_data`.
 - Use the server-issued immutable `item_id` for every existing or retired item operation.
 - Use `item_id: null` only for a genuinely new item.
 - Keep `semantic_key` stable and invariant-focused, for example `ui.dashboard.range_filter_persists`.
@@ -21,7 +24,7 @@ Never bind or merge from fuzzy title/description similarity. Treat default/share
 
 ## Select an operation
 
-- `retain`: reuse the exact definition revision and decision.
+- `retain`: reuse the exact complete definition revision and decision; never rebuild it from summary fields.
 - `editorial_update`: wording/presentation only; the server may append a validity-preservation event.
 - `material_update`: action, expectation, precondition, target, risk, required flag, or behavior changed.
 - `add`: new invariant; always pending.

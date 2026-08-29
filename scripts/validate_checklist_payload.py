@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from math import isfinite
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 
 OPERATIONS = {"retain", "editorial_update", "material_update", "add", "retire", "reopen", "rename_key"}
@@ -45,7 +46,44 @@ EVIDENCE_PROPERTIES = {
     "source_revision",
     "evidence_sufficiency",
     "blocker_reason",
+    "lineage",
 }
+LINEAGE_PROPERTIES = {
+    "project_id",
+    "provider",
+    "provider_run_id",
+    "environment",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+    "artifact",
+    "assertion",
+    "authentication",
+    "cost",
+    "usage",
+    "stop_reason",
+    "original_payload_reference",
+}
+LINEAGE_REFERENCE_PROPERTIES = {"uri", "digest"}
+LINEAGE_ASSERTION_PROPERTIES = {"identity", "details"}
+FORBIDDEN_LINEAGE_ASSERTION_DETAIL_KEYS = {
+    "body",
+    "payload",
+    "raw_body",
+    "raw_payload",
+    "request",
+    "request_body",
+    "request_payload",
+    "response",
+    "response_body",
+    "response_payload",
+    "log",
+    "logs",
+    "raw_logs",
+}
+LINEAGE_AUTHENTICATION_PROPERTIES = {"mode", "outcome"}
+LINEAGE_COST_PROPERTIES = {"amount", "currency"}
+LINEAGE_USAGE_PROPERTIES = {"metric", "quantity", "unit"}
 SOURCE_DESCRIPTOR_PROPERTIES = {
     "source_kind",
     "source_locator",
@@ -108,6 +146,11 @@ ITEM_PROPERTIES = {
     "invalidation_reason",
 }
 VERSION_PROPERTIES = {"integration_name", "integration_version", "skill_version", "contract_version"}
+VERIFICATION_INSTRUCTION_CONTEXT_PROPERTIES = {
+    "account_revision",
+    "project_revision",
+    "effective_digest",
+}
 SEMANTIC_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,199}$")
 SEMANTIC_VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$")
 ANCHOR = re.compile(r"^(file|route|api|component|config|data|content|global):.+$")
@@ -115,10 +158,58 @@ UUID_OR_ULID = re.compile(
     r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|[0-9A-HJKMNP-TV-Z]{26})$"
 )
 FEATURE_ID = re.compile(r"^feat_[0-9A-HJKMNP-TV-Z]{26}$")
+PROJECT_ID = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 ITEM_ID = re.compile(r"^item_[0-9A-HJKMNP-TV-Z]{26}$")
 ITEM_REVISION_ID = re.compile(r"^irev_[0-9A-HJKMNP-TV-Z]{26}$")
 RESOLUTION_ID = re.compile(r"^resolution_[0-9A-HJKMNP-TV-Z]{26}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+LINEAGE_SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+PROVIDER_RUN_ID = re.compile(r"^[^\s\r\n](?:[^\r\n]*[^\s\r\n])?$")
+LINEAGE_DATE_TIME = re.compile(
+    r"^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])"
+    r"T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]{1,3})?(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))$"
+)
+URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+MALFORMED_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+FORBIDDEN_LINEAGE_URI_SCHEMES = {"data", "file", "javascript", "vbscript"}
+SENSITIVE_LINEAGE_URI_KEYS = {
+    "access_token",
+    "api_key",
+    "authorization",
+    "client_secret",
+    "cookie",
+    "password",
+    "proxy_authorization",
+    "refresh_token",
+    "secret",
+    "set_cookie",
+    "token",
+}
+SENSITIVE_LINEAGE_URI_COMPACT_KEYS = {
+    "accesstoken",
+    "apikey",
+    "clientsecret",
+    "proxyauthorization",
+    "refreshtoken",
+    "setcookie",
+}
+SENSITIVE_QUERY_KEYS = {
+    "awsaccesskeyid",
+    "signature",
+    "sig",
+    "x_amz_credential",
+    "x_amz_security_token",
+    "x_amz_signature",
+    "x_goog_credential",
+    "x_goog_signature",
+}
+SENSITIVE_QUERY_COMPACT_KEYS = {key.replace("_", "") for key in SENSITIVE_QUERY_KEYS}
+SENSITIVE_LINEAGE_URI_KEY_SEGMENT = re.compile(r"(?:^|_)(?:password|passwd|secret|token)(?:_|$)")
+COST_AMOUNT = re.compile(r"^(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$")
+COST_CURRENCY = re.compile(r"^[A-Z]{3}$")
+AUTHENTICATION_OUTCOMES = {"not_required", "succeeded", "failed", "blocked", "unknown"}
+MAX_LINEAGE_DURATION_MS = 2_678_400_000
 RFC3339_DATE_TIME = re.compile(
     r"^(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
     r"[Tt](?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
@@ -166,6 +257,7 @@ SYMBOLIC_CREDENTIAL_VALUE = re.compile(
 ROOT_PROPERTIES = {
     "feature_id",
     "base_checklist_revision",
+    "verification_instruction_context",
     "source_descriptor",
     "source_digest",
     "source_manifest",
@@ -197,8 +289,21 @@ def _secret_kinds(value: str) -> list[str]:
 
 
 def _normalized_key_name(value: str) -> str:
-    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value.strip())
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", value.strip())
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
     return re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
+
+
+def _is_sensitive_lineage_uri_parameter_key(value: str) -> bool:
+    normalized = _normalized_key_name(unquote(value))
+    compact = normalized.replace("_", "")
+    return (
+        normalized in SENSITIVE_LINEAGE_URI_KEYS
+        or compact in SENSITIVE_LINEAGE_URI_COMPACT_KEYS
+        or SENSITIVE_LINEAGE_URI_KEY_SEGMENT.search(normalized) is not None
+        or normalized in SENSITIVE_QUERY_KEYS
+        or compact in SENSITIVE_QUERY_COMPACT_KEYS
+    )
 
 
 def _is_sensitive_credential_key(value: str) -> bool:
@@ -389,6 +494,337 @@ def _is_rfc3339_date_time(value: str) -> bool:
     )
 
 
+def _lineage_date_time(value: Any, path: str, errors: list[dict[str, str]]) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or LINEAGE_DATE_TIME.fullmatch(value) is None or not _is_rfc3339_date_time(value):
+        _error(
+            errors,
+            path,
+            "INVALID_LINEAGE_DATE_TIME",
+            "lineage timestamps must use canonical RFC 3339 with a timezone and at most millisecond precision",
+        )
+        return None
+    try:
+        return datetime.fromisoformat(value.removesuffix("Z") + ("+00:00" if value.endswith("Z") else ""))
+    except ValueError:
+        _error(errors, path, "INVALID_LINEAGE_DATE_TIME", "lineage timestamp is not a valid calendar date-time")
+        return None
+
+
+def _lineage_nullable_string(
+    value: Any,
+    path: str,
+    errors: list[dict[str, str]],
+    maximum: int,
+    pattern: re.Pattern[str] | None = None,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        _error(errors, path, "INVALID_LINEAGE_STRING", "value must be a non-empty string or null")
+        return None
+    if len(value) > maximum:
+        _error(errors, path, "MAX_LENGTH", f"value must contain at most {maximum} characters")
+    if pattern is not None and pattern.fullmatch(value) is None:
+        _error(errors, path, "INVALID_LINEAGE_STRING", "value does not match the published lineage syntax")
+    return value
+
+
+def _validate_lineage_uri(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if not isinstance(value, str) or not value or len(value) > 2048 or URI_SCHEME.match(value) is None:
+        _error(errors, path, "INVALID_URI", "uri must be an absolute URI containing at most 2048 characters")
+        return
+    if (
+        any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
+        or "\\" in value
+        or MALFORMED_PERCENT_ESCAPE.search(value) is not None
+    ):
+        _error(errors, path, "INVALID_URI", "uri contains an invalid character or percent escape")
+        return
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+        hostname = parsed.hostname
+    except ValueError:
+        _error(errors, path, "INVALID_URI", "uri must be a valid absolute URI")
+        return
+    if not parsed.scheme or parsed.username is not None or parsed.password is not None:
+        _error(errors, path, "INVALID_URI", "uri must be a valid absolute URI")
+        return
+    if parsed.scheme.lower() in FORBIDDEN_LINEAGE_URI_SCHEMES:
+        _error(errors, path, "INVALID_URI", "evidence references must use a non-executable absolute URI scheme")
+        return
+    for parameter_string in (parsed.query, parsed.fragment):
+        for parameter in re.split(r"[?&;]", parameter_string):
+            raw_key = parameter.split("=", 1)[0]
+            if _is_sensitive_lineage_uri_parameter_key(raw_key):
+                _error(errors, path, "SECRET_REJECTED", "uri contains a credential-bearing parameter")
+                return
+    if parsed.scheme.lower() in {"http", "https"}:
+        if not hostname:
+            _error(errors, path, "INVALID_URI", "HTTP uri must include a host")
+        return
+    if not hostname and not parsed.path:
+        _error(errors, path, "INVALID_URI", "non-HTTP uri must include a host or path")
+
+
+def _validate_lineage_reference(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        _error(errors, path, "INVALID_LINEAGE_REFERENCE", "reference must be an object or null")
+        return
+    _reject_additional_properties(value, LINEAGE_REFERENCE_PROPERTIES, path, errors)
+    for key in sorted(LINEAGE_REFERENCE_PROPERTIES):
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+    if "uri" in value:
+        _validate_lineage_uri(value["uri"], f"{path}.uri", errors)
+    digest = value.get("digest")
+    if "digest" in value and (not isinstance(digest, str) or DIGEST.fullmatch(digest) is None):
+        _error(errors, f"{path}.digest", "INVALID_DIGEST", "digest must use sha256:<64 hex>")
+
+
+def _validate_lineage_assertion(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if not isinstance(value, dict):
+        _error(errors, path, "OBJECT_REQUIRED", "assertion must be an object")
+        return
+    _reject_additional_properties(value, LINEAGE_ASSERTION_PROPERTIES, path, errors)
+    for key in sorted(LINEAGE_ASSERTION_PROPERTIES):
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+    if "identity" in value:
+        _lineage_nullable_string(value["identity"], f"{path}.identity", errors, 500)
+    details = value.get("details")
+    if "details" not in value or details is None:
+        return
+    if not isinstance(details, dict):
+        _error(errors, f"{path}.details", "INVALID_ASSERTION_DETAILS", "details must be an object or null")
+        return
+    if not details:
+        _error(errors, f"{path}.details", "MIN_PROPERTIES", "details must contain at least one property")
+    if len(details) > 50:
+        _error(errors, f"{path}.details", "MAX_PROPERTIES", "details must contain at most 50 properties")
+    for property_name, candidate in details.items():
+        if isinstance(property_name, str) and _normalized_key_name(property_name) in FORBIDDEN_LINEAGE_ASSERTION_DETAIL_KEYS:
+            _error(
+                errors,
+                f"{path}.details.[forbidden-key]",
+                "SECRET_REJECTED",
+                "assertion details must not contain raw request, response, body, payload, or log fields",
+            )
+        if isinstance(candidate, str) and len(candidate) > 2000:
+            _error(
+                errors,
+                _property_path(f"{path}.details", property_name),
+                "MAX_LENGTH",
+                "assertion detail strings must contain at most 2000 characters",
+            )
+        valid = candidate is None or isinstance(candidate, (str, bool))
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+            valid = not isinstance(candidate, float) or isfinite(candidate)
+        if not valid:
+            _error(
+                errors,
+                _property_path(f"{path}.details", property_name),
+                "INVALID_ASSERTION_DETAIL",
+                "assertion detail values must be finite JSON scalar values or null",
+            )
+
+
+def _validate_lineage_authentication(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if not isinstance(value, dict):
+        _error(errors, path, "OBJECT_REQUIRED", "authentication must be an object")
+        return
+    _reject_additional_properties(value, LINEAGE_AUTHENTICATION_PROPERTIES, path, errors)
+    for key in sorted(LINEAGE_AUTHENTICATION_PROPERTIES):
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+    if "mode" in value:
+        _lineage_nullable_string(value["mode"], f"{path}.mode", errors, 64, LINEAGE_SLUG)
+    outcome = value.get("outcome")
+    if "outcome" in value and outcome is not None and outcome not in AUTHENTICATION_OUTCOMES:
+        _error(
+            errors,
+            f"{path}.outcome",
+            "INVALID_AUTHENTICATION_OUTCOME",
+            f"outcome must be null or one of {sorted(AUTHENTICATION_OUTCOMES)}",
+        )
+    mode = value.get("mode")
+    if "mode" in value and "outcome" in value and ((mode is None) != (outcome is None)):
+        _error(
+            errors,
+            path,
+            "INCOMPLETE_AUTHENTICATION",
+            "authentication mode and outcome must either both be null or both be present",
+        )
+    if mode == "none" and outcome != "not_required":
+        _error(
+            errors,
+            f"{path}.outcome",
+            "AUTHENTICATION_MISMATCH",
+            "authentication outcome must be not_required when mode is none",
+        )
+
+
+def _validate_lineage_cost(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        _error(errors, path, "INVALID_LINEAGE_COST", "cost must be an object or null")
+        return
+    _reject_additional_properties(value, LINEAGE_COST_PROPERTIES, path, errors)
+    for key in sorted(LINEAGE_COST_PROPERTIES):
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+    amount = value.get("amount")
+    if "amount" in value and (not isinstance(amount, str) or COST_AMOUNT.fullmatch(amount) is None):
+        _error(errors, f"{path}.amount", "INVALID_COST_AMOUNT", "amount must be a canonical non-negative decimal string")
+    currency = value.get("currency")
+    if "currency" in value and (not isinstance(currency, str) or COST_CURRENCY.fullmatch(currency) is None):
+        _error(errors, f"{path}.currency", "INVALID_COST_CURRENCY", "currency must use three uppercase letters")
+
+
+def _validate_lineage_usage(value: Any, path: str, errors: list[dict[str, str]]) -> None:
+    if not isinstance(value, list):
+        _error(errors, path, "ARRAY_REQUIRED", "usage must be an array")
+        return
+    if len(value) > 50:
+        _error(errors, path, "MAX_ITEMS", "usage must contain at most 50 values")
+    observed_pairs: set[tuple[str, str]] = set()
+    for index, item in enumerate(value):
+        item_path = f"{path}[{index}]"
+        if not isinstance(item, dict):
+            _error(errors, item_path, "OBJECT_REQUIRED", "usage entry must be an object")
+            continue
+        _reject_additional_properties(item, LINEAGE_USAGE_PROPERTIES, item_path, errors)
+        for key in sorted(LINEAGE_USAGE_PROPERTIES):
+            if key not in item:
+                _error(errors, f"{item_path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+        for key in ("metric", "unit"):
+            candidate = item.get(key)
+            if key in item and (
+                not isinstance(candidate, str)
+                or not candidate
+                or len(candidate) > 64
+                or LINEAGE_SLUG.fullmatch(candidate) is None
+            ):
+                _error(errors, f"{item_path}.{key}", "INVALID_USAGE_LABEL", f"{key} must use the published lineage syntax")
+        quantity = item.get("quantity")
+        if "quantity" in item and (
+            isinstance(quantity, bool)
+            or not isinstance(quantity, (int, float))
+            or (isinstance(quantity, float) and not isfinite(quantity))
+            or quantity < 0
+        ):
+            _error(errors, f"{item_path}.quantity", "INVALID_USAGE_QUANTITY", "quantity must be a finite non-negative number")
+        metric = item.get("metric")
+        unit = item.get("unit")
+        if isinstance(metric, str) and isinstance(unit, str):
+            pair = (metric, unit)
+            if pair in observed_pairs:
+                _error(
+                    errors,
+                    item_path,
+                    "DUPLICATE_USAGE",
+                    "usage metric and unit pairs must be unique",
+                )
+            observed_pairs.add(pair)
+
+
+def _validate_lineage(
+    value: Any,
+    path: str,
+    errors: list[dict[str, str]],
+    expected_source_revision: str | None,
+    evidence_source_revision: Any,
+) -> None:
+    if not isinstance(value, dict):
+        _error(errors, path, "OBJECT_REQUIRED", "lineage must be an object")
+        return
+    _reject_additional_properties(value, LINEAGE_PROPERTIES, path, errors)
+    for key in sorted(LINEAGE_PROPERTIES):
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_LINEAGE_FIELD", f"{key} is required")
+
+    project_id = value.get("project_id")
+    if "project_id" in value and (not isinstance(project_id, str) or PROJECT_ID.fullmatch(project_id) is None):
+        _error(errors, f"{path}.project_id", "INVALID_PROJECT_ID", "project_id must be proj_ followed by one ULID")
+    provider = value.get("provider")
+    if "provider" in value and (
+        not isinstance(provider, str)
+        or not provider
+        or len(provider) > 100
+        or LINEAGE_SLUG.fullmatch(provider) is None
+    ):
+        _error(errors, f"{path}.provider", "INVALID_PROVIDER", "provider must use the published lineage syntax")
+    provider_run_id = value.get("provider_run_id")
+    if "provider_run_id" in value and (
+        not isinstance(provider_run_id, str)
+        or not provider_run_id
+        or len(provider_run_id) > 255
+        or PROVIDER_RUN_ID.fullmatch(provider_run_id) is None
+    ):
+        _error(errors, f"{path}.provider_run_id", "INVALID_PROVIDER_RUN_ID", "provider_run_id must be a trimmed single-line string")
+    if "environment" in value:
+        _lineage_nullable_string(value["environment"], f"{path}.environment", errors, 200)
+
+    started_at = _lineage_date_time(value.get("started_at"), f"{path}.started_at", errors) if "started_at" in value else None
+    ended_at = _lineage_date_time(value.get("ended_at"), f"{path}.ended_at", errors) if "ended_at" in value else None
+    duration_ms = value.get("duration_ms")
+    if "duration_ms" in value and duration_ms is not None and (
+        isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or duration_ms < 0
+        or duration_ms > MAX_LINEAGE_DURATION_MS
+    ):
+        _error(
+            errors,
+            f"{path}.duration_ms",
+            "INVALID_DURATION",
+            f"duration_ms must be null or an integer from 0 through {MAX_LINEAGE_DURATION_MS}",
+        )
+        duration_ms = None
+    if started_at is not None and ended_at is not None:
+        elapsed = ended_at - started_at
+        elapsed_ms = (elapsed.days * 86_400_000) + (elapsed.seconds * 1000) + (elapsed.microseconds // 1000)
+        if elapsed_ms < 0:
+            _error(errors, f"{path}.ended_at", "INVALID_TIME_RANGE", "ended_at must not be before started_at")
+        elif duration_ms is not None and duration_ms != elapsed_ms:
+            _error(errors, f"{path}.duration_ms", "DURATION_MISMATCH", "duration_ms must equal the timestamp interval")
+
+    if "artifact" in value:
+        _validate_lineage_reference(value["artifact"], f"{path}.artifact", errors)
+    if "assertion" in value:
+        _validate_lineage_assertion(value["assertion"], f"{path}.assertion", errors)
+    if "authentication" in value:
+        _validate_lineage_authentication(value["authentication"], f"{path}.authentication", errors)
+    if "cost" in value:
+        _validate_lineage_cost(value["cost"], f"{path}.cost", errors)
+    if "usage" in value:
+        _validate_lineage_usage(value["usage"], f"{path}.usage", errors)
+    if "stop_reason" in value:
+        _lineage_nullable_string(value["stop_reason"], f"{path}.stop_reason", errors, 500)
+    if "original_payload_reference" in value:
+        _validate_lineage_reference(
+            value["original_payload_reference"],
+            f"{path}.original_payload_reference",
+            errors,
+        )
+    if (
+        expected_source_revision is not None
+        and isinstance(evidence_source_revision, str)
+        and evidence_source_revision != expected_source_revision
+    ):
+        _error(
+            errors,
+            f"{path.rsplit('.', 1)[0]}.source_revision",
+            "SOURCE_REVISION_MISMATCH",
+            "lineage evidence source_revision must match source_descriptor.opaque_revision",
+        )
+
+
 def _validate_anchor(value: Any, path: str, errors: list[dict[str, str]]) -> str | None:
     if not isinstance(value, str) or len(value) < 4 or len(value) > 500 or not ANCHOR.fullmatch(value):
         _error(errors, path, "INVALID_ANCHOR", "anchor must use a supported type prefix and contain at most 500 characters")
@@ -520,7 +956,11 @@ def _validate_source(payload: dict[str, Any], errors: list[dict[str, str]]) -> s
     return anchors
 
 
-def _validate_automated_evidence(value: Any, errors: list[dict[str, str]]) -> None:
+def _validate_automated_evidence(
+    value: Any,
+    errors: list[dict[str, str]],
+    expected_source_revision: str | None,
+) -> None:
     if not isinstance(value, list):
         _error(errors, "$.automated_evidence", "ARRAY_REQUIRED", "automated_evidence must be an array")
         return
@@ -628,6 +1068,15 @@ def _validate_automated_evidence(value: Any, errors: list[dict[str, str]]) -> No
                     "INVALID_EVIDENCE_SUFFICIENCY",
                     "evidence with blocker_reason cannot be marked sufficient",
                 )
+
+        if "lineage" in item:
+            _validate_lineage(
+                item["lineage"],
+                f"{path}.lineage",
+                errors,
+                expected_source_revision,
+                item.get("source_revision"),
+            )
 
 
 def _validate_sections(value: Any, errors: list[dict[str, str]]) -> set[str]:
@@ -857,6 +1306,30 @@ def _validate_versions(value: Any, errors: list[dict[str, str]]) -> None:
         _error(errors, "$.versions.contract_version", "CONTRACT_UNSUPPORTED", "contract_version must be 1.0.0")
 
 
+def _validate_verification_instruction_context(value: Any, errors: list[dict[str, str]]) -> None:
+    path = "$.verification_instruction_context"
+    if not isinstance(value, dict):
+        _error(errors, path, "OBJECT_REQUIRED", "verification_instruction_context must be an object")
+        return
+    _reject_additional_properties(value, VERIFICATION_INSTRUCTION_CONTEXT_PROPERTIES, path, errors)
+    for key in ("account_revision", "project_revision"):
+        revision = value.get(key)
+        if key not in value:
+            _error(errors, f"{path}.{key}", "REQUIRED_PROPERTY", f"{key} is required")
+        elif isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            _error(errors, f"{path}.{key}", "INVALID_REVISION", f"{key} must be non-negative")
+    digest = value.get("effective_digest")
+    if "effective_digest" not in value:
+        _error(errors, f"{path}.effective_digest", "REQUIRED_PROPERTY", "effective_digest is required")
+    elif not isinstance(digest, str) or DIGEST.fullmatch(digest) is None:
+        _error(
+            errors,
+            f"{path}.effective_digest",
+            "INVALID_DIGEST",
+            "effective_digest must use sha256:<64 hex>",
+        )
+
+
 def validate_payload(payload: Any) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     if not isinstance(payload, dict):
@@ -872,6 +1345,7 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     base_revision = payload.get("base_checklist_revision")
     if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < 0:
         _error(errors, "$.base_checklist_revision", "INVALID_REVISION", "base_checklist_revision must be non-negative")
+    _validate_verification_instruction_context(payload.get("verification_instruction_context"), errors)
     idempotency_key = _required_string(payload, "idempotency_key", "$", errors)
     if idempotency_key and not UUID_OR_ULID.fullmatch(idempotency_key):
         _error(errors, "$.idempotency_key", "INVALID_IDEMPOTENCY_KEY", "use one UUID or ULID per logical write")
@@ -880,7 +1354,13 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     for key in ("implementation_change_summary", "intent_summary", "scope_summary", "expected_outcome"):
         _required_string(payload, key, "$", errors, maximum=5000)
     _string_list(payload.get("preconditions"), "$.preconditions", errors, maximum=100, item_maximum=1000)
-    _validate_automated_evidence(payload.get("automated_evidence"), errors)
+    source_descriptor = payload.get("source_descriptor")
+    expected_source_revision = (
+        source_descriptor.get("opaque_revision")
+        if isinstance(source_descriptor, dict) and isinstance(source_descriptor.get("opaque_revision"), str)
+        else None
+    )
+    _validate_automated_evidence(payload.get("automated_evidence"), errors, expected_source_revision)
 
     section_keys = _validate_sections(payload.get("sections"), errors)
     items = payload.get("items")

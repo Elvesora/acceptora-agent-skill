@@ -1,12 +1,14 @@
 {
   "schema_version": 1,
-  "capabilities_reviewed_on": "2026-08-23",
+  "capabilities_reviewed_on": "2026-08-29",
   "clients": [
     {
       "id": "codex",
       "display_name": "Codex",
-      "reference_build": "codex-cli 0.147.0",
+      "reference_build": "codex-cli 0.150.1",
       "minimum_build": "codex-cli 0.144.0",
+      "install_supported": true,
+      "unsupported_reason": null,
       "project_layout": {
         "skill_directory": ".agents/skills/acceptora",
         "instruction_file": "AGENTS.md",
@@ -62,6 +64,8 @@
       "display_name": "Claude Code",
       "reference_build": "2.1.114",
       "minimum_build": null,
+      "install_supported": true,
+      "unsupported_reason": null,
       "project_layout": {
         "skill_directory": ".claude/skills/acceptora",
         "instruction_file": "CLAUDE.md",
@@ -117,8 +121,10 @@
     {
       "id": "gemini-cli",
       "display_name": "Gemini CLI",
-      "reference_build": "0.56.0",
+      "reference_build": "0.57.0",
       "minimum_build": null,
+      "install_supported": true,
+      "unsupported_reason": null,
       "project_layout": {
         "skill_directory": ".gemini/skills/acceptora",
         "instruction_file": "GEMINI.md",
@@ -168,6 +174,62 @@
         "hooks": "https://geminicli.com/docs/hooks/",
         "mcp": "https://geminicli.com/docs/tools/mcp-server/",
         "configuration": "https://geminicli.com/docs/reference/configuration/"
+      }
+    },
+    {
+      "id": "antigravity-cli",
+      "display_name": "Antigravity CLI",
+      "reference_build": "1.1.22",
+      "minimum_build": null,
+      "install_supported": false,
+      "unsupported_reason": "Antigravity CLI 1.1.22 does not reliably dispatch PreInvocation and Stop hooks in real client runs, so automatic task-start and completion-gate enforcement cannot be guaranteed.",
+      "project_layout": {
+        "skill_directory": ".agents/skills/acceptora",
+        "instruction_file": "AGENTS.md",
+        "instruction_source": "snippets/AGENTS.md.block"
+      },
+      "user_config": {
+        "default_directory": ".gemini/config",
+        "settings": {
+          "base": "client_config",
+          "path": "hooks.json"
+        },
+        "mcp": {
+          "base": "client_config",
+          "path": "mcp_config.json"
+        }
+      },
+      "templates": {
+        "hooks": {
+          "default": "adapters/antigravity/hooks.json.example",
+          "platform_overrides": {}
+        },
+        "mcp": {
+          "path": "config/antigravity-mcp.example.json",
+          "renderer": "antigravity_stdio_json"
+        }
+      },
+      "runtime_adapters": [
+        "adapters/antigravity/task_start.py",
+        "adapters/antigravity/stop.py"
+      ],
+      "lifecycle": {
+        "baseline_events": [
+          "PreInvocation"
+        ],
+        "completion_event": "Stop",
+        "update_check_event": "PreInvocation"
+      },
+      "discovery_checks": [
+        "/skills",
+        "/mcp or agy mcp list",
+        "/hooks"
+      ],
+      "official_docs": {
+        "skills": "https://antigravity.google/docs/cli/plugins/",
+        "hooks": "https://antigravity.google/docs/hooks/",
+        "mcp": "https://antigravity.google/docs/cli/mcp/",
+        "configuration": "https://antigravity.google/docs/cli/reference/"
       }
     }
   ]

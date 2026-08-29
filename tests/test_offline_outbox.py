@@ -28,6 +28,8 @@ FEATURE_ID = "feat_01J00000000000000000000001"
 IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000001"
 TOKEN = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAV_" + ("A" * 48)
 SECOND_TOKEN = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAA_" + ("B" * 48)
+PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+TOKEN_ENV = f"ACCEPTORA_AGENT_TOKEN_{PROJECT_ID.upper()}"
 
 
 def sdk_validation_request() -> dict:
@@ -237,6 +239,20 @@ def redirect_servers() -> Iterator[tuple[str, ReplayServer, ReplayServer]]:
 
 
 class OfflineOutboxTest(unittest.TestCase):
+    def test_project_derived_token_environment_is_enforced_before_transport_setup(self) -> None:
+        with self.assertRaisesRegex(REPLAY.ReplayConfigurationError, TOKEN_ENV):
+            REPLAY._settings(
+                mock.Mock(),
+                {
+                    "mcp_url": "https://acceptora.example/mcp",
+                    "project_id": PROJECT_ID,
+                    "token_env": "ACCEPTORA_AGENT_TOKEN",
+                },
+                self.root / "outbox",
+                self.root / "outbox",
+                False,
+            )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -789,10 +805,11 @@ class OfflineOutboxTest(unittest.TestCase):
             "target_root": str(self.root),
             "mcp_url": "https://acceptora.example/mcp",
             "completion_gate_url": "https://acceptora.example/api/integrations/completion-gate",
-            "token_env": "ACCEPTORA_AGENT_TOKEN",
+            "project_id": PROJECT_ID,
+            "token_env": TOKEN_ENV,
         }), encoding="utf-8")
         digest = "sha256:" + hashlib.sha256(config.read_bytes()).hexdigest()
-        with mock.patch.dict(os.environ, {"ACCEPTORA_AGENT_TOKEN": TOKEN}), mock.patch.object(
+        with mock.patch.dict(os.environ, {TOKEN_ENV: TOKEN}), mock.patch.object(
             REPLAY, "_post_json"
         ) as post:
             result = REPLAY.main([

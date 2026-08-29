@@ -2,14 +2,14 @@
   "project_id": "proj_01J00000000000000000000001",
   "source_identity": "git:example/sdk-validation",
   "adapter_kind": "git-v1",
-  "adapter_version": "1.0.0",
+  "adapter_version": "1.0.1",
   "baseline_source_descriptor": {
     "source_kind": "git",
     "source_locator": "example/sdk-validation",
     "opaque_revision": "base-revision",
     "base_revision": null,
     "adapter_kind": "git-v1",
-    "adapter_version": "1.0.0",
+    "adapter_version": "1.0.1",
     "metadata": {
       "guarantee": "strict",
       "branch": "main"
@@ -22,7 +22,7 @@
     "opaque_revision": "current-revision",
     "base_revision": "base-revision",
     "adapter_kind": "git-v1",
-    "adapter_version": "1.0.0",
+    "adapter_version": "1.0.1",
     "metadata": {
       "guarantee": "strict",
       "branch": "main"
@@ -52,7 +52,7 @@
   "versions": {
     "integration_name": "codex",
     "integration_version": "1.0.0",
-    "skill_version": "1.1.0",
+    "skill_version": "1.2.3",
     "contract_version": "1.0.0"
   }
 }

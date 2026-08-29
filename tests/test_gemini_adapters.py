@@ -69,13 +69,82 @@ class GeminiTemplateTest(unittest.TestCase):
 
         self.assertEqual("https://verify.example.test/mcp", server["httpUrl"])
         self.assertNotIn("ACCEPTORA_MCP_URL", server["httpUrl"])
-        self.assertEqual("Bearer ${ACCEPTORA_AGENT_TOKEN}", server["headers"]["Authorization"])
+        self.assertEqual(
+            "Bearer ${ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID}",
+            server["headers"]["Authorization"],
+        )
         self.assertIs(False, server["trust"])
         self.assertNotIn("type", server)
         self.assertNotIn("url", server)
 
 
 class GeminiTaskStartAdapterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.preflight_patcher = patch.object(TASK_START, "prepare_verification_instructions", return_value=None)
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+    def test_before_agent_preflight_is_model_visible_and_runs_before_baseline_capture(self) -> None:
+        event = {"session_id": "session-1", "cwd": "/workspace", "hook_event_name": "BeforeAgent"}
+        snapshot = SimpleNamespace()
+        order: list[str] = []
+        stdout = io.StringIO()
+
+        with (
+            patch.object(
+                TASK_START,
+                "prepare_verification_instructions",
+                side_effect=lambda *_: order.append("instructions") or snapshot,
+            ),
+            patch.object(
+                TASK_START,
+                "capture_task_baseline",
+                side_effect=lambda *_: order.append("baseline"),
+            ),
+            patch.object(TASK_START, "instruction_additional_context", return_value="Fixed preflight directive."),
+            patch.object(TASK_START, "read_event", return_value=event),
+            patch.object(TASK_START, "check_for_skill_update", return_value=None),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = TASK_START.main()
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(["instructions", "baseline"], order)
+        self.assertEqual(
+            {
+                "decision": "allow",
+                "hookSpecificOutput": {
+                    "hookEventName": "BeforeAgent",
+                    "additionalContext": "Fixed preflight directive.",
+                },
+            },
+            json.loads(stdout.getvalue()),
+        )
+
+    def test_before_agent_preflight_failure_denies_without_leaking_or_capturing_baseline(self) -> None:
+        event = {"session_id": "session-1", "cwd": "/workspace", "hook_event_name": "BeforeAgent"}
+        stdout = io.StringIO()
+
+        with (
+            patch.object(TASK_START, "read_event", return_value=event),
+            patch.object(
+                TASK_START,
+                "prepare_verification_instructions",
+                side_effect=RuntimeError("OWNER-ANALYSIS-GUIDANCE"),
+            ),
+            patch.object(TASK_START, "capture_task_baseline") as capture,
+            patch.object(TASK_START, "check_for_skill_update") as update,
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = TASK_START.main()
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("deny", payload["decision"])
+        self.assertNotIn("OWNER-ANALYSIS-GUIDANCE", stdout.getvalue())
+        capture.assert_not_called()
+        update.assert_not_called()
+
     def test_captures_the_event_with_the_gemini_integration_name(self) -> None:
         event = {
             "session_id": "session-1",

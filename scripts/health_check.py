@@ -22,10 +22,21 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from read_instruction_snapshot import (  # noqa: E402
+    InstructionSnapshotError,
+    validate_effective_instructions,
+)
+
+
 PACKAGE_MANIFEST = PACKAGE_ROOT / "config" / "package-manifest.json"
 PINNED_RUNTIME_CONFIG = PACKAGE_ROOT.parent / "config" / "runtime-config.json"
-PINNED_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
+PROJECT_TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_"
 TOKEN_PATTERN = re.compile(r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$")
+PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
 MAX_RESPONSE_BYTES = 4_000_000
 MAX_CONFIG_BYTES = 1_048_576
@@ -272,9 +283,13 @@ def load_settings(config_path: Path, config_body: bytes | None = None) -> Settin
     if not isinstance(config, dict) or config.get("version") != 1:
         raise HealthFailure("CONFIG_INVALID", "The verification configuration must use version 1.")
 
+    project_id = config.get("project_id")
+    if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
+        raise HealthFailure("CONFIG_INVALID", "project_id must use the public proj_<ULID> form.")
+    expected_token_env = f"{PROJECT_TOKEN_ENV_PREFIX}{project_id.upper()}"
     token_env = config.get("token_env")
-    if token_env != PINNED_TOKEN_ENV:
-        raise HealthFailure("CONFIG_INVALID", f"token_env must be pinned to {PINNED_TOKEN_ENV}.")
+    if token_env != expected_token_env:
+        raise HealthFailure("CONFIG_INVALID", f"token_env must be pinned to {expected_token_env}.")
     token = os.environ.get(token_env, "")
     if not TOKEN_PATTERN.fullmatch(token):
         raise HealthFailure("AUTH_REQUIRED", "The configured credential environment variable is missing or malformed.")
@@ -314,10 +329,6 @@ def load_settings(config_path: Path, config_body: bytes | None = None) -> Settin
     }
     if observed_paths != expected_paths:
         raise HealthFailure("CONFIG_INVALID", "Acceptora endpoint paths do not match the canonical pinned API layout.")
-    project_id = config.get("project_id")
-    if not isinstance(project_id, str) or re.fullmatch(r"proj_[0-9A-HJKMNP-TV-Z]{26}", project_id) is None:
-        raise HealthFailure("CONFIG_INVALID", "project_id must use the public proj_<ULID> form.")
-
     return Settings(
         mcp_url=mcp_url,
         contract_version_url=contract_version_url,
@@ -568,6 +579,13 @@ def run_health(
         raise HealthFailure("PROJECT_ID_MISMATCH", "The bearer token is not scoped to the pinned Acceptora project.")
     if project_response.get("versions") != expected_versions:
         raise HealthFailure("PROJECT_VERSION_DRIFT", "The authenticated project metadata versions do not match this package.")
+    try:
+        instruction_context = validate_effective_instructions(project_response.get("verification_instructions"))
+    except InstructionSnapshotError:
+        raise HealthFailure(
+            "PROJECT_INSTRUCTION_DRIFT",
+            "The authenticated project metadata contains invalid verification instructions.",
+        ) from None
     expected_endpoints = {
         "mcp": settings.mcp_url,
         "rest": settings.rest_base_url,
@@ -585,6 +603,11 @@ def run_health(
         raise HealthFailure("PROJECT_SCOPE_MISSING", "The bearer token lacks mandatory verification workflow scopes.")
     optional_warnings = [] if "exceptions:write" in scopes else ["Optional exceptions:write scope is not granted."]
     checks.append({"name": "project_scope", "status": "pass", "detail": "Project identity, endpoint origin, versions, lifecycle access, and mandatory scopes match."})
+    checks.append({
+        "name": "verification_instructions",
+        "status": "pass",
+        "detail": "Effective owner guidance revisions and canonical digest are valid; instruction bodies were not printed.",
+    })
 
     protocol_version = manifest["contract"]["mcp_protocol_version"]
     initialize_id = 1
@@ -745,6 +768,13 @@ def run_health(
             "source": "environment",
             "environment_variable": settings.token_env,
             "value_exposed": False,
+        },
+        "verification_instructions": {
+            "configured": instruction_context["configured"],
+            "account_revision": instruction_context["account_revision"],
+            "project_revision": instruction_context["project_revision"],
+            "effective_digest": instruction_context["effective_digest"],
+            "bodies_exposed": False,
         },
         "message": (
             "Setup confirmed: every health check passed and the pinned project connection is established."

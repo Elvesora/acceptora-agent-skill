@@ -16,7 +16,7 @@
     "include": {
       "type": "array",
       "uniqueItems": true,
-      "maxItems": 6,
+      "maxItems": 7,
       "items": {
         "type": "string",
         "enum": [
@@ -25,7 +25,8 @@
           "comments",
           "attachments",
           "history_summary",
-          "source_revisions"
+          "source_revisions",
+          "automated_evidence"
         ]
       }
     },

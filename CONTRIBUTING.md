@@ -29,7 +29,7 @@ The unit suite validates skill metadata, customer documentation links, client te
 - Preserve the strict Git, filesystem, executable, origin, credential, plan, receipt, rollback, and external-runtime boundaries.
 - Never log or persist bearer tokens, repository contents, private source material, response bodies, credentials, cookies, personal data, or customer data.
 - Add `unittest` coverage for every changed success, failure, and boundary path.
-- Keep Codex, Claude Code, and Gemini CLI templates aligned with their primary configuration and hook documentation.
+- Keep Codex, Claude Code, Antigravity CLI, and Gemini CLI templates aligned with their primary configuration and hook documentation.
 - Synchronize routes, authentication, scopes, versions, MCP tools, annotations, schemas, digests, examples, tests, package metadata, and the changelog for every API or MCP contract change.
 - Keep fixtures synthetic and free of customer, personal, local-workstation, or unrelated project identifiers.
 

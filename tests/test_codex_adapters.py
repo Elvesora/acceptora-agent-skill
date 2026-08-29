@@ -51,12 +51,15 @@ class CodexTemplateTest(unittest.TestCase):
                         self.assertNotIn("python3 ", hook[field])
                         self.assertNotIn("py -3 ", hook[field])
 
-    def test_mcp_template_uses_a_fixed_token_variable_and_write_approval(self) -> None:
+    def test_mcp_template_uses_a_project_token_placeholder_and_write_approval(self) -> None:
         body = (PACKAGE_ROOT / "config" / "codex-mcp.example.toml").read_text(encoding="utf-8")
         setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
 
         self.assertIn('url = "https://verify.example.test/mcp"', body)
-        self.assertIn('bearer_token_env_var = "ACCEPTORA_AGENT_TOKEN"', body)
+        self.assertIn(
+            'bearer_token_env_var = "ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID"',
+            body,
+        )
         self.assertIn('default_tools_approval_mode = "writes"', body)
         self.assertNotIn("ACCEPTORA_MCP_URL", body)
         self.assertIn("https://developers.openai.com/codex/config-reference", setup)
@@ -64,6 +67,72 @@ class CodexTemplateTest(unittest.TestCase):
 
 
 class CodexTaskStartAdapterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.preflight_patcher = patch.object(TASK_START, "prepare_verification_instructions", return_value=None)
+        self.preflight_patcher.start()
+        self.addCleanup(self.preflight_patcher.stop)
+
+    def test_prompt_preflight_is_model_visible_and_runs_before_baseline_capture(self) -> None:
+        event = {"session_id": "session-1", "cwd": "/workspace", "hook_event_name": "UserPromptSubmit"}
+        snapshot = SimpleNamespace()
+        order: list[str] = []
+        stdout = io.StringIO()
+
+        with (
+            patch.object(
+                TASK_START,
+                "prepare_verification_instructions",
+                side_effect=lambda *_: order.append("instructions") or snapshot,
+            ),
+            patch.object(
+                TASK_START,
+                "capture_task_baseline",
+                side_effect=lambda *_: order.append("baseline"),
+            ),
+            patch.object(TASK_START, "instruction_additional_context", return_value="Fixed preflight directive."),
+            patch.object(TASK_START, "read_event", return_value=event),
+            patch.object(TASK_START, "check_for_skill_update", return_value=None),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = TASK_START.main()
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(["instructions", "baseline"], order)
+        self.assertEqual(
+            {
+                "continue": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "Fixed preflight directive.",
+                },
+            },
+            json.loads(stdout.getvalue()),
+        )
+
+    def test_prompt_preflight_failure_blocks_without_leaking_or_capturing_baseline(self) -> None:
+        event = {"session_id": "session-1", "cwd": "/workspace", "hook_event_name": "UserPromptSubmit"}
+        stdout = io.StringIO()
+
+        with (
+            patch.object(TASK_START, "read_event", return_value=event),
+            patch.object(
+                TASK_START,
+                "prepare_verification_instructions",
+                side_effect=RuntimeError("OWNER-ANALYSIS-GUIDANCE"),
+            ),
+            patch.object(TASK_START, "capture_task_baseline") as capture,
+            patch.object(TASK_START, "check_for_skill_update") as update,
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = TASK_START.main()
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("block", payload["decision"])
+        self.assertNotIn("OWNER-ANALYSIS-GUIDANCE", stdout.getvalue())
+        capture.assert_not_called()
+        update.assert_not_called()
+
     def test_session_start_emits_a_non_blocking_update_notice(self) -> None:
         event = {"session_id": "session-1", "cwd": "/workspace", "hook_event_name": "SessionStart"}
         stdout = io.StringIO()

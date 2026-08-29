@@ -5,13 +5,18 @@
   "request": {
     "feature_id": "feat_01J00000000000000000000002",
     "base_checklist_revision": 1,
+    "verification_instruction_context": {
+      "account_revision": 0,
+      "project_revision": 0,
+      "effective_digest": "sha256:9df3c2a7b2db47c24f8f46c92265fe8b5d1319591bd010862f7d3184e791e862"
+    },
     "source_descriptor": {
       "source_kind": "git",
       "source_locator": "example/uncovered-surface",
       "opaque_revision": "fixture-uncovered",
       "base_revision": "fixture-covered",
       "adapter_kind": "git-working-tree",
-      "adapter_version": "1.0.0",
+      "adapter_version": "1.0.1",
       "metadata": {}
     },
     "source_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -78,7 +83,7 @@
     "versions": {
       "integration_name": "acceptora-fixture-client",
       "integration_version": "1.0.0",
-      "skill_version": "1.1.0",
+      "skill_version": "1.2.3",
       "contract_version": "1.0.0"
     },
     "idempotency_key": "00000000-0000-4000-8000-000000000003"

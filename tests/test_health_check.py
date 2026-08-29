@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -21,6 +22,8 @@ MANIFEST_PATH = SKILL_ROOT / "config" / "package-manifest.json"
 HTTP_API_PATH = CONTRACT_ROOT / "http-api.json"
 TOKEN = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAV_" + ("A" * 48)
 WRONG_TOKEN = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAA_" + ("B" * 48)
+PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+TOKEN_ENV = f"ACCEPTORA_AGENT_TOKEN_{PROJECT_ID.upper()}"
 REST_PATHS = {
     "resolve_feature": "/api/v1/integrations/features/resolve",
     "get_feature_context": "/api/v1/integrations/features/context",
@@ -69,6 +72,29 @@ CONNECTION_CONFIRMATION_RESPONSE_SCHEMA = {
 def canonical_digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def verification_instructions() -> dict[str, Any]:
+    digest_payload = {
+        "schema_version": "1.0",
+        "account_revision": 4,
+        "project_revision": 2,
+        "instructions": {
+            "analysis_guidance": "OWNER-INSTRUCTION-BODY-DO-NOT-PRINT",
+            "manual_verification_guidance": "Use generated test identifiers.",
+            "test_data_guidance": None,
+        },
+        "sources": {
+            "analysis_guidance": "account",
+            "manual_verification_guidance": "project",
+            "test_data_guidance": "default",
+        },
+    }
+    return {
+        **digest_payload,
+        "effective_digest": canonical_digest(digest_payload),
+        "configured": True,
+    }
 
 
 class ContractResolver:
@@ -199,7 +225,7 @@ class HealthState:
         self.versions = {
             "contract_version": "1.0.0",
             "integration_version": "1.0.0",
-            "skill_version": "1.1.0",
+            "skill_version": "1.2.3",
             "schema_registry": "contracts/v1/mcp-tools.json",
         }
         self.protocol_version = "2025-11-25"
@@ -216,6 +242,7 @@ class HealthState:
                 "feedback:read", "feedback:address", "gates:read", "exceptions:write",
             ],
             "versions": {key: self.versions[key] for key in ("contract_version", "integration_version", "skill_version")},
+            "verification_instructions": verification_instructions(),
         }
         self.confirmation_response = {
             "project_id": self.project["project_id"],
@@ -384,8 +411,8 @@ def run_health(
                     "rest_base_url": f"{base_url}/api/v1/integrations",
                     "openapi_url": f"{base_url}/api/v1/integrations/openapi.json",
                     "completion_gate_url": f"{base_url}/api/v1/integrations/completion-gate",
-                    "project_id": "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                    "token_env": "ACCEPTORA_AGENT_TOKEN",
+                    "project_id": PROJECT_ID,
+                    "token_env": TOKEN_ENV,
                     "timeout_seconds": 3,
                 }
         if config_padding:
@@ -394,6 +421,7 @@ def run_health(
         digest = "sha256:" + hashlib.sha256(config.read_bytes()).hexdigest()
         command = [
             sys.executable,
+            "-B",
             "-I",
             str(HEALTH),
             "--config",
@@ -409,12 +437,39 @@ def run_health(
             command,
             capture_output=True,
             text=True,
-            env={**os.environ, "ACCEPTORA_AGENT_TOKEN": token},
+            env={
+                **os.environ,
+                "ACCEPTORA_AGENT_TOKEN": WRONG_TOKEN,
+                "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAA": WRONG_TOKEN,
+                TOKEN_ENV: token,
+            },
             check=False,
         )
 
 
 class HealthCheckTest(unittest.TestCase):
+    def test_project_derived_token_environment_is_enforced_before_network(self) -> None:
+        specification = importlib.util.spec_from_file_location("acceptora_health_under_test", HEALTH)
+        self.assertIsNotNone(specification)
+        assert specification is not None and specification.loader is not None
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[specification.name] = module
+        try:
+            specification.loader.exec_module(module)
+            config = json.dumps(
+                {
+                    "version": 1,
+                    "project_id": PROJECT_ID,
+                    "token_env": "ACCEPTORA_AGENT_TOKEN",
+                }
+            ).encode("utf-8")
+            with self.assertRaises(module.HealthFailure) as raised:
+                module.load_settings(Path("unused.json"), config)
+            self.assertEqual("CONFIG_INVALID", raised.exception.code)
+            self.assertIn(TOKEN_ENV, str(raised.exception))
+        finally:
+            sys.modules.pop(specification.name, None)
+
     def test_http_registry_declares_confirmation_with_all_normal_workflow_scopes(self) -> None:
         registry = json.loads(HTTP_API_PATH.read_text(encoding="utf-8"))
 
@@ -458,6 +513,9 @@ class HealthCheckTest(unittest.TestCase):
         )
         self.assertTrue(payload["authentication_telemetry_may_update"])
         self.assertFalse(payload["credential"]["value_exposed"])
+        self.assertFalse(payload["verification_instructions"]["bodies_exposed"])
+        self.assertEqual(4, payload["verification_instructions"]["account_revision"])
+        self.assertNotIn("OWNER-INSTRUCTION-BODY-DO-NOT-PRINT", result.stdout + result.stderr)
         self.assertEqual(8, len(payload["mcp"]["tools"]))
         self.assertEqual(
             ["GET", "GET", "GET", "initialize", "notifications/initialized", "tools/list"],
@@ -558,6 +616,17 @@ class HealthCheckTest(unittest.TestCase):
                 self.assertFalse(
                     any(request["path"] == CONNECTION_CONFIRMATION_PATH for request in state.requests)
                 )
+
+    def test_health_rejects_instruction_digest_drift_without_printing_bodies(self) -> None:
+        state = HealthState()
+        state.project["verification_instructions"]["effective_digest"] = "sha256:" + ("f" * 64)
+
+        result = run_health(state)
+
+        self.assertEqual(1, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertEqual("PROJECT_INSTRUCTION_DRIFT", payload["error"]["code"])
+        self.assertNotIn("OWNER-INSTRUCTION-BODY-DO-NOT-PRINT", result.stdout + result.stderr)
 
     def test_confirmation_response_drift_fails_without_claiming_the_write_was_confirmed(self) -> None:
         state = HealthState()

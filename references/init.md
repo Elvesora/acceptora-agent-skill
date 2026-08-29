@@ -6,7 +6,7 @@ The authoritative procedure is [SETUP.md](../SETUP.md) in a fresh production sou
 
 ## When this owns the turn
 
-Follow this file when the user invoked `init`, asked to install, connect, set up, reconnect, or update the Acceptora skill, or when a `SessionStart` update notice routed here.
+Follow this file when the user invoked `init`, asked to install, connect, set up, reconnect, or update the Acceptora skill, or when a task-start update notice routed here.
 
 Do not use this file for ordinary finished implementation work. That is the completion workflow in [SKILL.md](../SKILL.md).
 
@@ -14,7 +14,7 @@ Do not use this file for ordinary finished implementation work. That is the comp
 
 When an Acceptora onboarding prompt supplies `client`, `target`, `project_id`, and `acceptora_origin`, use those values exactly; do not ask the user to repeat them.
 
-When a `SessionStart` update notice routes here, its printed cache path is `<runtime-root>/state/skill-update.json`. Use `<runtime-root>/package/scripts/install.py` as the existing trusted installer and `<runtime-root>/install-receipt.json` as the installed identity record. Read `client`, `target_root`, `project_id`, `api_base_url` (the `acceptora_origin`), and `runtime_base` from the receipt's `inputs`, then validate that receipt with the trusted installer's **Status and rollback** command in [SETUP.md](../SETUP.md) before using those values. Stop if the paths or validation do not match.
+When a task-start update notice routes here, its printed cache path is `<runtime-root>/state/skill-update.json`. Use `<runtime-root>/package/scripts/install.py` as the existing trusted installer and `<runtime-root>/install-receipt.json` as the installed identity record. Read `client`, `target_root`, `project_id`, `api_base_url` (the `acceptora_origin`), and `runtime_base` from the receipt's `inputs`, then validate that receipt with the trusted installer's **Status and rollback** command in [SETUP.md](../SETUP.md) before using those values. Stop if the paths or validation do not match.
 
 Resolve an onboarding `target: current Git worktree` to its absolute Git worktree root; for an update notice, use the validated receipt's `target_root`.
 
@@ -31,11 +31,11 @@ Read [SETUP.md](../SETUP.md) from that checkout. Follow **Obtain the production 
 
 ## Credential
 
-Confirm `ACCEPTORA_AGENT_TOKEN` exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation. Never request the token value.
+Derive the credential variable as `ACCEPTORA_AGENT_TOKEN_` plus the uppercase public project ID. Confirm that exact project-derived variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation. Never request the token value.
 
 ## New installation
 
-Follow **Plan** in [SETUP.md](../SETUP.md). Prefer the onboarding `client` value when it was supplied. Otherwise omit `--client` and let the installer detect a unique agent environment or project marker; stop if detection is ambiguous. Use `--format text --output "<external-path>/acceptora-install-plan.json"` so the user can read the human plan while `apply` still receives JSON. Show the full source commit with the plan review, and pause for explicit approval of the exact `plan_sha256`. Never approve a plan digest, client trust, hooks, or MCP tool permissions on the user's behalf.
+Follow **Plan** in [SETUP.md](../SETUP.md). Pass the onboarding `client` value explicitly. If no value was supplied, identify the active supported client before planning and still pass `--client`; never infer Antigravity from `.agents`, which is also a Codex workspace layout. Use `--format text --output "<external-path>/acceptora-install-plan.json"` so the user can read the human plan while `apply` still receives JSON. Show the full source commit with the plan review, and pause for explicit approval of the exact `plan_sha256`. Never approve a plan digest, client trust, hooks, or MCP tool permissions on the user's behalf.
 
 Only after that exact digest is accepted, follow **Apply**, **Client review**, **Status and rollback** (status only), and finally **Health check and connection confirmation**. The last command must use `--confirm-connection`. It marks the project connected only after every contract check passes.
 

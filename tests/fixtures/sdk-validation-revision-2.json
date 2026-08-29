@@ -5,13 +5,18 @@
   "request": {
     "feature_id": "feat_01J00000000000000000000001",
     "base_checklist_revision": 1,
+    "verification_instruction_context": {
+      "account_revision": 1,
+      "project_revision": 0,
+      "effective_digest": "sha256:51aecb0cd23b2f32b8ef15073edd4abdb99461dd7c60a4d82d36a9d26ba4505e"
+    },
     "source_descriptor": {
       "source_kind": "git",
       "source_locator": "example/sdk-validation",
       "opaque_revision": "fixture-revision-2",
       "base_revision": "fixture-initial",
       "adapter_kind": "git-working-tree",
-      "adapter_version": "1.0.0",
+      "adapter_version": "1.0.1",
       "metadata": {
         "branch": "fixture/sdk-validation-contract"
       }
@@ -203,7 +208,7 @@
     "versions": {
       "integration_name": "acceptora-fixture-client",
       "integration_version": "1.0.0",
-      "skill_version": "1.1.0",
+      "skill_version": "1.2.3",
       "contract_version": "1.0.0"
     },
     "idempotency_key": "00000000-0000-4000-8000-000000000002"

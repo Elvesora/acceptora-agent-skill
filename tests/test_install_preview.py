@@ -59,6 +59,7 @@ class InstallPreviewTest(unittest.TestCase):
             before = tree_snapshot(target)
             command = [
                 sys.executable,
+                "-B",
                 "-I",
                 str(PREVIEW),
                 "--client",
@@ -78,7 +79,8 @@ class InstallPreviewTest(unittest.TestCase):
                 "--format",
                 "json",
             ]
-            environment = {**os.environ, "ACCEPTORA_AGENT_TOKEN": secret}
+            token_env = "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+            environment = {**os.environ, token_env: secret}
 
             first = subprocess.run(command, capture_output=True, text=True, env=environment, check=False)
             between = tree_snapshot(target)
@@ -105,14 +107,17 @@ class InstallPreviewTest(unittest.TestCase):
 
             merges = {Path(entry["target"]).name: entry for entry in preview["manual_merges"]}
             self.assertEqual("manual_merge_required", merges["config.toml"]["action"])
-            self.assertIn("ACCEPTORA_AGENT_TOKEN", merges["config.toml"]["content"])
+            self.assertEqual(token_env, preview["token_env"])
+            self.assertIn(token_env, merges["config.toml"]["content"])
             self.assertIn("non_authoritative_project_hints", merges["config.json"]["content"])
             self.assertNotIn("_url", merges["config.json"]["content"])
             self.assertNotIn("{{SKILL_ROOT_WINDOWS}}", merges["hooks.json"]["content"])
             hooks = json.loads(merges["hooks.json"]["content"])
             windows_command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
             self.assertIn(str(Path(sys.executable).resolve()).replace("\\", "/"), windows_command)
-            self.assertIn(" -I ", windows_command)
+            self.assertIn(" -B -I ", windows_command)
+            self.assertTrue(windows_command.startswith('& "'))
+            self.assertNotIn("cmd.exe", windows_command.lower())
             self.assertIn(preview["external_runtime"]["destination"], windows_command)
             self.assertNotIn(str(target.resolve()), windows_command)
             self.assertNotIn("token_env", merges["config.json"]["content"])
@@ -126,6 +131,7 @@ class InstallPreviewTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
+                    "-B",
                     "-I",
                     str(PREVIEW),
                     "--client",

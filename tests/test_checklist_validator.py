@@ -74,6 +74,349 @@ class ChecklistValidatorContractTest(unittest.TestCase):
         self.assertEqual(4, result["item_count"])
         self.assertEqual(2, result["manifest_anchor_count"])
 
+    def test_rejects_every_contract_required_root_field_when_missing(self) -> None:
+        schema = json.loads(
+            (
+                FIXTURES_ROOT
+                / "contracts"
+                / "v1"
+                / "reconciliation-request.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        authoritative_request = fixture_request("sdk-validation-initial.json")
+
+        self.assertEqual(18, len(schema["required"]))
+
+        for field in schema["required"]:
+            with self.subTest(field=field):
+                request = deepcopy(authoritative_request)
+                del request[field]
+
+                result = VALIDATOR.validate_payload(request)
+
+                self.assertFalse(result["valid"], result)
+
+    def test_requires_a_fresh_verification_instruction_context(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        del request["verification_instruction_context"]
+
+        self.assert_invalid(request, "OBJECT_REQUIRED")
+
+    def test_rejects_malformed_or_extended_verification_instruction_context(self) -> None:
+        cases = (
+            ("account_revision", True, "INVALID_REVISION"),
+            ("project_revision", -1, "INVALID_REVISION"),
+            ("effective_digest", "sha256:ABC", "INVALID_DIGEST"),
+        )
+        for field, value, expected_code in cases:
+            with self.subTest(field=field):
+                request = fixture_request("sdk-validation-initial.json")
+                request["verification_instruction_context"][field] = value
+                self.assert_invalid(request, expected_code)
+
+        extended = fixture_request("sdk-validation-initial.json")
+        extended["verification_instruction_context"]["instructions"] = {"analysis_guidance": "do not echo"}
+        self.assert_invalid(extended, "ADDITIONAL_PROPERTY")
+
+    def test_accepts_legacy_evidence_without_provider_lineage(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        for evidence in request["automated_evidence"]:
+            evidence.pop("lineage", None)
+
+        result = VALIDATOR.validate_payload(request)
+
+        self.assertTrue(result["valid"], result.get("errors"))
+
+    def test_accepts_nullable_provider_lineage_without_fabricating_timing_or_provider_details(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        request["automated_evidence"][0]["lineage"].update({
+            "environment": None,
+            "started_at": None,
+            "ended_at": None,
+            "duration_ms": None,
+            "artifact": None,
+            "assertion": {"identity": None, "details": None},
+            "authentication": {"mode": None, "outcome": None},
+            "cost": None,
+            "usage": [],
+            "stop_reason": None,
+            "original_payload_reference": None,
+        })
+
+        result = VALIDATOR.validate_payload(request)
+
+        self.assertTrue(result["valid"], result.get("errors"))
+
+    def test_provider_lineage_requires_every_published_key_and_rejects_unknown_keys(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        request["automated_evidence"][0]["lineage"].pop("provider_run_id")
+
+        self.assert_invalid(request, "REQUIRED_LINEAGE_FIELD")
+
+        request = fixture_request("sdk-validation-initial.json")
+        request["automated_evidence"][0]["lineage"]["provider_verdict"] = "approved"
+
+        self.assert_invalid(request, "ADDITIONAL_PROPERTY")
+
+    def test_provider_lineage_timing_is_canonical_consistent_and_independently_nullable(self) -> None:
+        for values in (
+            {"started_at": None, "ended_at": "2026-07-15T09:00:00Z", "duration_ms": None},
+            {"started_at": "2026-07-15T08:59:58.750Z", "ended_at": None, "duration_ms": 1250},
+            {"started_at": None, "ended_at": None, "duration_ms": 1250},
+            {"started_at": "2026-07-15T22:59:58.750+14:00", "ended_at": None, "duration_ms": None},
+            {"started_at": "2026-07-14T18:59:58.750-13:59", "ended_at": None, "duration_ms": None},
+        ):
+            with self.subTest(values=values):
+                request = fixture_request("sdk-validation-initial.json")
+                request["automated_evidence"][0]["lineage"].update(values)
+                result = VALIDATOR.validate_payload(request)
+                self.assertTrue(result["valid"], result.get("errors"))
+
+        invalid_cases = [
+            ({"started_at": "2026-07-15t08:59:58.750z"}, "INVALID_LINEAGE_DATE_TIME"),
+            ({"started_at": "2026-02-30T08:59:58Z"}, "INVALID_LINEAGE_DATE_TIME"),
+            ({"started_at": "2026-07-15T08:59:58.7500Z"}, "INVALID_LINEAGE_DATE_TIME"),
+            ({"started_at": "2026-07-15T08:59:58+14:01"}, "INVALID_LINEAGE_DATE_TIME"),
+            ({"started_at": "2026-07-15T08:59:58-14:59"}, "INVALID_LINEAGE_DATE_TIME"),
+            ({"ended_at": "2026-07-15T08:59:58.000Z"}, "INVALID_TIME_RANGE"),
+            ({"duration_ms": 1249}, "DURATION_MISMATCH"),
+            ({"duration_ms": True}, "INVALID_DURATION"),
+            ({"duration_ms": 2_678_400_001}, "INVALID_DURATION"),
+        ]
+        for values, expected_code in invalid_cases:
+            with self.subTest(values=values):
+                request = fixture_request("sdk-validation-initial.json")
+                request["automated_evidence"][0]["lineage"].update(values)
+                self.assert_invalid(request, expected_code)
+
+    def test_provider_lineage_nested_values_match_the_published_contract(self) -> None:
+        cases = [
+            (("project_id",), "project_01J00000000000000000000001", "INVALID_PROJECT_ID"),
+            (("provider",), "GitHub Actions", "INVALID_PROVIDER"),
+            (("provider_run_id",), " run-1 ", "INVALID_PROVIDER_RUN_ID"),
+            (("environment",), "", "INVALID_LINEAGE_STRING"),
+            (("artifact", "uri"), "relative/artifact.json", "INVALID_URI"),
+            (("artifact", "uri"), "https:path-without-host", "INVALID_URI"),
+            (("artifact", "uri"), "https://example.invalid/bad%escape", "INVALID_URI"),
+            (("artifact", "uri"), "https://example.invalid\\artifact", "INVALID_URI"),
+            (("artifact", "uri"), "urn:", "INVALID_URI"),
+            (("artifact", "uri"), "DaTa:text/plain,provider-output", "INVALID_URI"),
+            (("artifact", "uri"), "FILE:///tmp/provider-output.json", "INVALID_URI"),
+            (("artifact", "uri"), "JaVaScRiPt:alert(1)", "INVALID_URI"),
+            (("artifact", "uri"), "VBSCRIPT:msgbox(1)", "INVALID_URI"),
+            (("artifact", "digest"), "sha256:ABC", "INVALID_DIGEST"),
+            (("assertion", "details"), {}, "MIN_PROPERTIES"),
+            (("assertion", "details"), {"nested": {"value": 1}}, "INVALID_ASSERTION_DETAIL"),
+            (("authentication", "mode"), "OIDC", "INVALID_LINEAGE_STRING"),
+            (("authentication", "outcome"), "passed", "INVALID_AUTHENTICATION_OUTCOME"),
+            (("cost", "amount"), 0.01, "INVALID_COST_AMOUNT"),
+            (("cost", "currency"), "usd", "INVALID_COST_CURRENCY"),
+            (("usage", 0, "metric"), "Runner Seconds", "INVALID_USAGE_LABEL"),
+            (("usage", 0, "quantity"), -1, "INVALID_USAGE_QUANTITY"),
+            (("stop_reason",), "", "INVALID_LINEAGE_STRING"),
+            (("original_payload_reference", "uri"), "event.json", "INVALID_URI"),
+        ]
+
+        for path, value, expected_code in cases:
+            with self.subTest(path=path):
+                request = fixture_request("sdk-validation-initial.json")
+                lineage = request["automated_evidence"][0]["lineage"]
+                set_nested(lineage, path, value)
+                self.assert_invalid(request, expected_code)
+
+    def test_provider_lineage_authentication_and_usage_match_server_consistency_rules(self) -> None:
+        valid_authentication = fixture_request("sdk-validation-initial.json")
+        valid_authentication["automated_evidence"][0]["lineage"]["authentication"] = {
+            "mode": "none",
+            "outcome": "not_required",
+        }
+        result = VALIDATOR.validate_payload(valid_authentication)
+        self.assertTrue(result["valid"], result.get("errors"))
+
+        invalid_authentication_cases = [
+            ({"mode": "oidc", "outcome": None}, "INCOMPLETE_AUTHENTICATION"),
+            ({"mode": None, "outcome": "succeeded"}, "INCOMPLETE_AUTHENTICATION"),
+            ({"mode": "none", "outcome": "succeeded"}, "AUTHENTICATION_MISMATCH"),
+        ]
+        for authentication, expected_code in invalid_authentication_cases:
+            with self.subTest(authentication=authentication):
+                request = fixture_request("sdk-validation-initial.json")
+                request["automated_evidence"][0]["lineage"]["authentication"] = authentication
+                self.assert_invalid(request, expected_code)
+
+        duplicate_usage = fixture_request("sdk-validation-initial.json")
+        usage = duplicate_usage["automated_evidence"][0]["lineage"]["usage"]
+        usage.append(deepcopy(usage[0]))
+        self.assert_invalid(duplicate_usage, "DUPLICATE_USAGE")
+
+        distinct_units = fixture_request("sdk-validation-initial.json")
+        usage = distinct_units["automated_evidence"][0]["lineage"]["usage"]
+        second_usage = deepcopy(usage[0])
+        second_usage["unit"] = "milliseconds"
+        usage.append(second_usage)
+        result = VALIDATOR.validate_payload(distinct_units)
+        self.assertTrue(result["valid"], result.get("errors"))
+
+    def test_provider_lineage_source_revision_must_match_the_authoritative_descriptor(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        request["automated_evidence"][0]["source_revision"] = "another-revision"
+
+        self.assert_invalid(request, "SOURCE_REVISION_MISMATCH")
+
+    def test_provider_lineage_rejects_sensitive_assertion_details_without_echoing_values(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        synthetic_secret = "short-but-sensitive"
+        request["automated_evidence"][0]["lineage"]["assertion"]["details"] = {
+            "Authorization": synthetic_secret,
+        }
+
+        result = VALIDATOR.validate_payload(request)
+        encoded = json.dumps(result)
+
+        self.assertFalse(result["valid"])
+        self.assertIn("SECRET_REJECTED", {error["code"] for error in result["errors"]})
+        self.assertNotIn(synthetic_secret, encoded)
+
+    def test_provider_lineage_accepts_bounded_scalar_assertion_details(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        request["automated_evidence"][0]["lineage"]["assertion"]["details"] = {
+            "message": "x" * 2000,
+            "attempt": 2,
+            "cached": False,
+            "note": None,
+            "payload_count": 3,
+            "logger": "pytest",
+        }
+
+        result = VALIDATOR.validate_payload(request)
+
+        self.assertTrue(result["valid"], result.get("errors"))
+
+    def test_provider_lineage_rejects_oversized_assertion_detail_strings_without_echoing_values(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        oversized_value = "oversized-sensitive-value-" + ("x" * 2000)
+        request["automated_evidence"][0]["lineage"]["assertion"]["details"] = {
+            "message": oversized_value,
+        }
+
+        result = VALIDATOR.validate_payload(request)
+        encoded = json.dumps(result)
+
+        self.assertFalse(result["valid"])
+        self.assertIn("MAX_LENGTH", {error["code"] for error in result["errors"]})
+        self.assertNotIn(oversized_value, encoded)
+
+    def test_provider_lineage_rejects_raw_assertion_detail_keys_after_normalization_without_echoing_values(self) -> None:
+        forbidden_keys = (
+            "body",
+            "payload",
+            "raw_body",
+            "rawPayload",
+            "request",
+            "request-body",
+            "requestPayload",
+            "response",
+            "response.body",
+            "responsePayload",
+            "log",
+            "logs",
+            "rawLogs",
+        )
+
+        for index, key in enumerate(forbidden_keys):
+            with self.subTest(key=key):
+                request = fixture_request("sdk-validation-initial.json")
+                sensitive_value = f"raw-provider-content-{index}"
+                request["automated_evidence"][0]["lineage"]["assertion"]["details"] = {
+                    key: sensitive_value,
+                }
+
+                result = VALIDATOR.validate_payload(request)
+                encoded = json.dumps(result)
+
+                self.assertFalse(result["valid"])
+                self.assertIn("SECRET_REJECTED", {error["code"] for error in result["errors"]})
+                self.assertNotIn(sensitive_value, encoded)
+
+    def test_provider_lineage_rejects_uri_userinfo_without_echoing_it(self) -> None:
+        request = fixture_request("sdk-validation-initial.json")
+        synthetic_secret = "uri-userinfo-secret"
+        request["automated_evidence"][0]["lineage"]["artifact"]["uri"] = (
+            f"https://user:{synthetic_secret}@artifacts.example.invalid/report.json"
+        )
+
+        result = VALIDATOR.validate_payload(request)
+        encoded = json.dumps(result)
+
+        self.assertFalse(result["valid"])
+        self.assertIn("INVALID_URI", {error["code"] for error in result["errors"]})
+        self.assertNotIn(synthetic_secret, encoded)
+
+    def test_provider_lineage_rejects_signed_secret_query_parameters_without_echoing_values(self) -> None:
+        sensitive_keys = (
+            "AWSAccessKeyId",
+            "Signature",
+            "sig",
+            "X-Amz-Credential",
+            "X-Amz-Security-Token",
+            "X-Amz-Signature",
+            "X-Goog-Credential",
+            "X-Goog-Signature",
+            "%58-Amz-Signature",
+        )
+        synthetic_secret = "signed-query-value"
+
+        for key in sensitive_keys:
+            with self.subTest(key=key):
+                request = fixture_request("sdk-validation-initial.json")
+                request["automated_evidence"][0]["lineage"]["artifact"]["uri"] = (
+                    f"https://artifacts.example.invalid/report.json?{key}={synthetic_secret}"
+                )
+
+                result = VALIDATOR.validate_payload(request)
+                encoded = json.dumps(result)
+
+                self.assertFalse(result["valid"])
+                self.assertIn("SECRET_REJECTED", {error["code"] for error in result["errors"]})
+                self.assertNotIn(synthetic_secret, encoded)
+
+    def test_provider_lineage_rejects_standard_encoded_and_fragment_uri_secrets_without_echoing_values(self) -> None:
+        unsafe_suffixes = (
+            "?access_token={value}",
+            "?api_key={value}",
+            "?authorization={value}",
+            "?client_secret={value}",
+            "?cookie={value}",
+            "?password={value}",
+            "?proxy_authorization={value}",
+            "?refresh_token={value}",
+            "?secret={value}",
+            "?set_cookie={value}",
+            "?token={value}",
+            "?accessToken={value}",
+            "?apiKey={value}",
+            "?clientSecret={value}",
+            "?api%5Fkey={value}",
+            "#X-Amz-Signature={value}",
+            "#client_secret={value}",
+            "#token={value}",
+        )
+
+        for index, suffix in enumerate(unsafe_suffixes):
+            with self.subTest(suffix=suffix.split("=", 1)[0]):
+                request = fixture_request("sdk-validation-initial.json")
+                synthetic_secret = f"uri-parameter-secret-{index}"
+                request["automated_evidence"][0]["lineage"]["artifact"]["uri"] = (
+                    "https://artifacts.example.invalid/report.json" + suffix.format(value=synthetic_secret)
+                )
+
+                result = VALIDATOR.validate_payload(request)
+                encoded = json.dumps(result)
+
+                self.assertFalse(result["valid"])
+                self.assertIn("SECRET_REJECTED", {error["code"] for error in result["errors"]})
+                self.assertNotIn(synthetic_secret, encoded)
+
     def test_accepts_equivalent_checklists_for_different_programming_stacks(self) -> None:
         substitutions = {
             "python": {
@@ -175,12 +518,16 @@ class ChecklistValidatorContractTest(unittest.TestCase):
             with self.subTest(path=path, boundary="accepted"):
                 request = fixture_request("sdk-validation-initial.json")
                 set_nested(request, path, "x" * maximum)
+                if path == ("automated_evidence", 0, "source_revision"):
+                    request["source_descriptor"]["opaque_revision"] = "x" * maximum
                 result = VALIDATOR.validate_payload(request)
                 self.assertTrue(result["valid"], result.get("errors"))
 
             with self.subTest(path=path, boundary="rejected"):
                 request = fixture_request("sdk-validation-initial.json")
                 set_nested(request, path, "x" * (maximum + 1))
+                if path == ("automated_evidence", 0, "source_revision"):
+                    request["source_descriptor"]["opaque_revision"] = "x" * (maximum + 1)
                 self.assert_invalid(request, expected_code)
 
     def test_array_counts_match_the_published_inclusive_maximums(self) -> None:

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 # This suite verifies the supported downloadable bundle. GitHub main remains
@@ -46,6 +47,7 @@ def run_builder(
 ) -> subprocess.CompletedProcess[str]:
     arguments = [
         sys.executable,
+        "-B",
         str(BUILDER),
         "--source-root",
         str(source),
@@ -134,6 +136,26 @@ def canonical_source_copy(workspace: Path) -> tuple[Path, str]:
 
 
 class ReleaseBuilderTest(unittest.TestCase):
+    def test_release_git_probe_receives_no_acceptora_credentials(self) -> None:
+        builder = load_builder_module()
+        environment = {
+            "ACCEPTORA_AGENT_TOKEN": "legacy-secret",
+            "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV": "project-secret",
+            "UNRELATED_SETTING": "preserved",
+        }
+        completed = subprocess.CompletedProcess(["git"], 0, stdout=b"", stderr=b"")
+        with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+            builder.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            builder._run_git(Path("git"), SKILL_ROOT, "status")
+
+        child_environment = run.call_args.kwargs["env"]
+        self.assertEqual("preserved", child_environment["UNRELATED_SETTING"])
+        self.assertNotIn("ACCEPTORA_AGENT_TOKEN", child_environment)
+        self.assertFalse(any(key.startswith("ACCEPTORA_AGENT_TOKEN_") for key in child_environment))
+
     def test_release_versions_use_strict_semver_with_build_metadata(self) -> None:
         builder = load_builder_module()
 
@@ -159,7 +181,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertEqual("built", first_result["status"])
             self.assertEqual(first_result["source_tree_sha256"], second_result["source_tree_sha256"])
             expected_files = {
-                "acceptora-1.1.0.zip",
+                "acceptora-1.2.3.zip",
                 "release-manifest.json",
                 "SHA256SUMS",
             }
@@ -170,7 +192,7 @@ class ReleaseBuilderTest(unittest.TestCase):
 
             manifest = json.loads((first_dist / "release-manifest.json").read_text(encoding="utf-8"))
             self.assertEqual("acceptora", manifest["name"])
-            self.assertEqual("1.1.0", manifest["version"])
+            self.assertEqual("1.2.3", manifest["version"])
             self.assertEqual(
                 {
                     "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
@@ -180,8 +202,11 @@ class ReleaseBuilderTest(unittest.TestCase):
             )
             self.assertEqual("UNVERSIONED", manifest["source_commit"])
             self.assertIn(manifest["source_state"], {"dirty_allowed", "unversioned", "unversioned_requested"})
-            self.assertEqual("2026-08-23", manifest["client_capabilities_reviewed_on"])
-            self.assertEqual(["codex", "claude-code", "gemini-cli"], manifest["supported_clients"])
+            self.assertEqual("2026-08-29", manifest["client_capabilities_reviewed_on"])
+            self.assertEqual(
+                ["codex", "claude-code", "gemini-cli"],
+                manifest["supported_clients"],
+            )
             installer = load_installer_module()
             self.assertEqual(
                 manifest["source_tree_sha256"],
@@ -189,9 +214,10 @@ class ReleaseBuilderTest(unittest.TestCase):
             )
             self.assertEqual(
                 {
-                    "codex": "codex-cli 0.147.0",
+                    "codex": "codex-cli 0.150.1",
                     "claude-code": "2.1.114",
-                    "gemini-cli": "0.56.0",
+                    "gemini-cli": "0.57.0",
+                    "antigravity-cli": "1.1.22",
                 },
                 manifest["reference_client_builds"],
             )
@@ -221,17 +247,23 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertNotIn("scripts/preview_install.py", paths)
             self.assertIn("scripts/install.py", paths)
             self.assertIn("adapters/gemini/after_agent.py", paths)
+            self.assertIn("adapters/antigravity/hooks.json.example", paths)
+            self.assertIn("adapters/antigravity/antigravity_event.py", paths)
+            self.assertIn("adapters/antigravity/task_start.py", paths)
+            self.assertIn("adapters/antigravity/stop.py", paths)
+            self.assertIn("adapters/antigravity/mcp_stdio_bridge.py", paths)
+            self.assertIn("config/antigravity-mcp.example.json", paths)
             self.assertNotIn("scripts/build_release.py", paths)
             self.assertFalse(any(path.startswith("tests/") for path in paths))
             self.assertFalse(any(path.endswith(".deferred") for path in paths))
             self.assertFalse(any("__pycache__" in path for path in paths))
-            with zipfile.ZipFile(first_dist / "acceptora-1.1.0.zip") as archive:
+            with zipfile.ZipFile(first_dist / "acceptora-1.2.3.zip") as archive:
                 for path in paths:
                     if path.endswith(".md"):
                         body = archive.read(f"acceptora/{path}").decode("utf-8")
                         self.assertNotIn("[Unreleased]", body, path)
                         if path == "CHANGELOG.md":
-                            self.assertIn("## [1.1.0] - 2026-08-23", body, path)
+                            self.assertIn("## [1.2.3] - 2026-08-29", body, path)
 
             artifacts = {entry["filename"]: entry for entry in manifest["artifacts"]}
             for name, entry in artifacts.items():
@@ -242,7 +274,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             for line in (first_dist / "SHA256SUMS").read_text(encoding="ascii").splitlines():
                 digest, name = line.split("  ", 1)
                 checksums[name] = digest
-            self.assertEqual(sha256(first_dist / "acceptora-1.1.0.zip"), checksums["acceptora-1.1.0.zip"])
+            self.assertEqual(sha256(first_dist / "acceptora-1.2.3.zip"), checksums["acceptora-1.2.3.zip"])
             self.assertEqual(sha256(first_dist / "release-manifest.json"), checksums["release-manifest.json"])
 
     def test_clean_canonical_main_builds_identical_directly_extractable_zip_bundles(self) -> None:
@@ -257,7 +289,7 @@ class ReleaseBuilderTest(unittest.TestCase):
 
             self.assertEqual(0, first.returncode, first.stderr)
             self.assertEqual(0, second.returncode, second.stderr)
-            zip_name = "acceptora-1.1.0.zip"
+            zip_name = "acceptora-1.2.3.zip"
             self.assertEqual((first_dist / zip_name).read_bytes(), (second_dist / zip_name).read_bytes())
             self.assertEqual(
                 (first_dist / "release-manifest.json").read_bytes(),
@@ -324,7 +356,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             dist = Path(temporary) / "dist"
             result = run_builder(dist)
             self.assertEqual(0, result.returncode, result.stderr)
-            zip_path = dist / "acceptora-1.1.0.zip"
+            zip_path = dist / "acceptora-1.2.3.zip"
 
             with zipfile.ZipFile(zip_path) as archive:
                 infos = archive.infolist()

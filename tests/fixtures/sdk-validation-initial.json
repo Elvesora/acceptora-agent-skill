@@ -5,13 +5,18 @@
   "request": {
     "feature_id": "feat_01J00000000000000000000001",
     "base_checklist_revision": 0,
+    "verification_instruction_context": {
+      "account_revision": 0,
+      "project_revision": 0,
+      "effective_digest": "sha256:9df3c2a7b2db47c24f8f46c92265fe8b5d1319591bd010862f7d3184e791e862"
+    },
     "source_descriptor": {
       "source_kind": "git",
       "source_locator": "example/sdk-validation",
       "opaque_revision": "fixture-initial",
       "base_revision": null,
       "adapter_kind": "git-working-tree",
-      "adapter_version": "1.0.0",
+      "adapter_version": "1.0.1",
       "metadata": {
         "branch": "fixture/sdk-validation-contract"
       }
@@ -59,6 +64,46 @@
         "evidence_sufficiency": "sufficient",
         "exit_status": 0,
         "summary": "The synthetic fixture reports three passing contract assertions.",
+        "lineage": {
+          "project_id": "proj_01J00000000000000000000001",
+          "provider": "github-actions",
+          "provider_run_id": "1234567890:1",
+          "environment": "ci",
+          "started_at": "2026-07-15T08:59:58.750Z",
+          "ended_at": "2026-07-15T09:00:00.000Z",
+          "duration_ms": 1250,
+          "artifact": {
+            "uri": "https://artifacts.example.invalid/runs/1234567890/phpunit.json",
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "assertion": {
+            "identity": "php-contract-suite",
+            "details": {
+              "framework": "phpunit",
+              "assertions": 3
+            }
+          },
+          "authentication": {
+            "mode": "oidc",
+            "outcome": "succeeded"
+          },
+          "cost": {
+            "amount": "0.01",
+            "currency": "USD"
+          },
+          "usage": [
+            {
+              "metric": "runner_seconds",
+              "quantity": 1.25,
+              "unit": "seconds"
+            }
+          ],
+          "stop_reason": "completed",
+          "original_payload_reference": {
+            "uri": "https://artifacts.example.invalid/runs/1234567890/event.json",
+            "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        },
         "source_revision": "fixture-initial"
       },
       {
@@ -192,7 +237,7 @@
     "versions": {
       "integration_name": "acceptora-fixture-client",
       "integration_version": "1.0.0",
-      "skill_version": "1.1.0",
+      "skill_version": "1.2.3",
       "contract_version": "1.0.0"
     },
     "idempotency_key": "00000000-0000-4000-8000-000000000001"

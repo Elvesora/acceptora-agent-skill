@@ -36,11 +36,13 @@ CLIENT_ENV_SIGNALS = {
     "codex": ("CODEX_HOME", "CODEX_THREAD_ID"),
     "claude-code": ("CLAUDECODE", "CLAUDE_CODE"),
     "gemini-cli": ("GEMINI_CLI",),
+    "antigravity-cli": (),
 }
 CLIENT_MARKER_DIRECTORIES = {
     "codex": (".agents", ".codex"),
     "claude-code": (".claude",),
     "gemini-cli": (".gemini",),
+    "antigravity-cli": (),
 }
 FALSEY_ENV_VALUES = {"", "0", "false", "no", "off"}
 EPHEMERAL_PARTS = {".git", ".github", ".pytest_cache", ".verification", "__pycache__", "dist", "tests"}
@@ -66,12 +68,16 @@ SKILL_FILES = {
     "LICENSE",
     "SKILL.md",
     "scripts/build_source_manifest.py",
+    "scripts/read_instruction_snapshot.py",
     "scripts/validate_checklist_payload.py",
     "scripts/write_offline_outbox.py",
 }
 SKILL_DIRECTORIES = {"agents", "references"}
-PINNED_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
+LEGACY_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
+PROJECT_TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_"
 WINDOWS_TRUSTED_INSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+WINDOWS_CODEX_SANDBOX_USERS_NAME = "CodexSandboxUsers"
+WINDOWS_READ_EXECUTE_SYNCHRONIZE_RIGHTS = 0x001200A9
 ACCEPTORA_TOKEN_PATTERN = r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$"
 MANAGED_HOOK_ID_PATTERN = re.compile(r"acceptora-target:([a-f0-9]{32})")
 PACKAGE_IDENTITY = "acceptora"
@@ -87,6 +93,7 @@ SHA256_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 _UNSPECIFIED = object()
 MINIMUM_PYTHON = (3, 11)
 _WINDOWS_CURRENT_SID: str | None = None
+_WINDOWS_CODEX_SANDBOX_USERS_SID: str | None | object = _UNSPECIFIED
 
 
 class InstallError(RuntimeError):
@@ -108,6 +115,49 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+
+
+def _credential_free_environment(
+    *additional_blocked_prefixes: str,
+    blocked_names: set[str] | None = None,
+) -> dict[str, str]:
+    excluded_names = {LEGACY_TOKEN_ENV, *(name.upper() for name in (blocked_names or set()))}
+    excluded_prefixes = (PROJECT_TOKEN_ENV_PREFIX, *(prefix.upper() for prefix in additional_blocked_prefixes))
+    environment: dict[str, str] = {}
+    for key in os.environ:
+        normalized = key.upper()
+        if normalized in excluded_names or normalized.startswith(excluded_prefixes):
+            continue
+        environment[key] = os.environ[key]
+    return environment
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if isinstance(left, (int, float)) or isinstance(right, (int, float)):
+        return (
+            isinstance(left, (int, float))
+            and not isinstance(left, bool)
+            and isinstance(right, (int, float))
+            and not isinstance(right, bool)
+            and left == right
+        )
+    if isinstance(left, dict) or isinstance(right, dict):
+        return (
+            isinstance(left, dict)
+            and isinstance(right, dict)
+            and left.keys() == right.keys()
+            and all(_json_equal(left[key], right[key]) for key in left)
+        )
+    if isinstance(left, list) or isinstance(right, list):
+        return (
+            isinstance(left, list)
+            and isinstance(right, list)
+            and len(left) == len(right)
+            and all(_json_equal(left_item, right_item) for left_item, right_item in zip(left, right, strict=True))
+        )
+    return type(left) is type(right) and left == right
 
 
 def _sha256_bytes(body: bytes) -> str:
@@ -234,11 +284,9 @@ def _windows_acl_infos(paths: list[Path]) -> dict[str, dict[str, Any]]:
         "ConvertTo-Json -Compress -Depth 5"
     )
     encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() not in {"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
-    }
+    environment = _credential_free_environment(
+        blocked_names={"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
+    )
     command = [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script]
     process: subprocess.CompletedProcess[str] | None = None
     timeout_error: subprocess.TimeoutExpired | None = None
@@ -298,11 +346,9 @@ def _windows_current_sid() -> str:
     if _WINDOWS_CURRENT_SID is not None:
         return _WINDOWS_CURRENT_SID
     powershell = _windows_system_tool("System32/WindowsPowerShell/v1.0/powershell.exe")
-    environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() not in {"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
-    }
+    environment = _credential_free_environment(
+        blocked_names={"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
+    )
     try:
         process = subprocess.run(
             [
@@ -328,7 +374,71 @@ def _windows_current_sid() -> str:
     return sid
 
 
-def _assert_private_directory(path: Path, label: str) -> None:
+def _windows_codex_sandbox_users_sid() -> str | None:
+    global _WINDOWS_CODEX_SANDBOX_USERS_SID
+    if _WINDOWS_CODEX_SANDBOX_USERS_SID is not _UNSPECIFIED:
+        return (
+            _WINDOWS_CODEX_SANDBOX_USERS_SID
+            if isinstance(_WINDOWS_CODEX_SANDBOX_USERS_SID, str)
+            else None
+        )
+    powershell = _windows_system_tool("System32/WindowsPowerShell/v1.0/powershell.exe")
+    environment = _credential_free_environment(
+        blocked_names={"PSMODULEPATH", "POWERSHELL_TELEMETRY_OPTOUT"}
+    )
+    script = (
+        "try{"
+        "$account=[System.Security.Principal.NTAccount]::new("
+        f"[Environment]::MachineName,'{WINDOWS_CODEX_SANDBOX_USERS_NAME}');"
+        "$account.Translate([System.Security.Principal.SecurityIdentifier]).Value"
+        "}catch [System.Security.Principal.IdentityNotMappedException]{exit 3}"
+    )
+    try:
+        process = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _WINDOWS_CODEX_SANDBOX_USERS_SID = None
+        return None
+    sid = process.stdout.strip()
+    if process.returncode == 0 and re.fullmatch(r"S-[0-9-]+", sid) is not None:
+        _WINDOWS_CODEX_SANDBOX_USERS_SID = sid
+        return sid
+    _WINDOWS_CODEX_SANDBOX_USERS_SID = None
+    return None
+
+
+def _windows_private_directory_allow_rule_is_supported(
+    rule: dict[str, Any],
+    current_sid: str,
+    allowed_read_execute_sid: str | None,
+) -> bool:
+    if rule.get("type") != "Allow":
+        return False
+    if rule.get("sid") in {current_sid, "S-1-3-4", "S-1-5-18", "S-1-5-32-544"}:
+        return rule.get("inherited") is False
+    rights = rule.get("rights")
+    return (
+        isinstance(allowed_read_execute_sid, str)
+        and rule.get("sid") == allowed_read_execute_sid
+        and type(rights) is int
+        and rights & 0xFFFFFFFF == WINDOWS_READ_EXECUTE_SYNCHRONIZE_RIGHTS
+        and rule.get("inherited") is False
+    )
+
+
+def _assert_private_directory(
+    path: Path,
+    label: str,
+    *,
+    allowed_read_execute_sid: str | None = None,
+) -> None:
     if not path.is_dir() or _is_linklike(path):
         raise InstallError(f"{label} must be a regular private directory.")
     if os.name == "nt":
@@ -340,10 +450,16 @@ def _assert_private_directory(path: Path, label: str) -> None:
         if acl.get("owner") != current or not isinstance(current, str) or not isinstance(rules, list):
             raise InstallError(f"{label} must be owned by the current Windows user.")
         allowed = [rule for rule in rules if isinstance(rule, dict) and rule.get("type") == "Allow"]
-        trusted = {current, "S-1-3-4", "S-1-5-18", "S-1-5-32-544"}
         if (
             not allowed
-            or any(rule.get("sid") not in trusted or rule.get("inherited") is not False for rule in allowed)
+            or any(
+                not _windows_private_directory_allow_rule_is_supported(
+                    rule,
+                    current,
+                    allowed_read_execute_sid,
+                )
+                for rule in allowed
+            )
             or not any(
                 rule.get("sid") in {current, "S-1-3-4"}
                 and int(rule.get("rights", 0)) & 0x1F01FF == 0x1F01FF
@@ -369,6 +485,7 @@ def _set_windows_owner_only_acl(path: Path, *, directory: bool) -> str:
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=_credential_free_environment(),
             timeout=10,
             check=False,
         )
@@ -379,12 +496,42 @@ def _set_windows_owner_only_acl(path: Path, *, directory: bool) -> str:
     return sid
 
 
-def _secure_private_directory(path: Path) -> None:
+def _grant_windows_directory_read_execute_acl(path: Path, sid: str) -> None:
+    if re.fullmatch(r"S-[0-9-]+", sid) is None:
+        raise InstallError("The managed external path read-execute SID is invalid.")
+    icacls = _windows_system_tool("System32/icacls.exe")
+    command = [str(icacls), str(path), "/grant:r", f"*{sid}:(OI)(CI)RX", "/Q"]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_credential_free_environment(),
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError("The managed external path ACL could not grant read-execute access.") from error
+    if result.returncode != 0:
+        raise InstallError("The managed external path ACL could not grant read-execute access.")
+
+
+def _secure_private_directory(
+    path: Path,
+    *,
+    allowed_read_execute_sid: str | None = None,
+) -> None:
     if os.name == "nt":
         _set_windows_owner_only_acl(path, directory=True)
+        if allowed_read_execute_sid is not None:
+            _grant_windows_directory_read_execute_acl(path, allowed_read_execute_sid)
     else:
         os.chmod(path, 0o700)
-    _assert_private_directory(path, "External runtime directory")
+    _assert_private_directory(
+        path,
+        "External runtime directory",
+        allowed_read_execute_sid=allowed_read_execute_sid,
+    )
 
 
 def _secure_private_file(path: Path) -> None:
@@ -553,11 +700,23 @@ def _runtime_identity(root: Path, client: str) -> str:
 def _runtime_root(root: Path, client: str, runtime_base: str | None) -> Path:
     base = _validate_external_path(Path(runtime_base) if runtime_base else _default_runtime_base(), "Runtime base")
     _assert_safe_user_path_ancestor_chain(base, "Runtime base")
+    sandbox_sid = _windows_codex_sandbox_users_sid() if os.name == "nt" else None
     if base.exists():
-        _assert_private_directory(base, "Runtime base")
+        if os.name == "nt":
+            _assert_private_directory(
+                base,
+                "Runtime base",
+                allowed_read_execute_sid=sandbox_sid,
+            )
+        else:
+            _assert_private_directory(base, "Runtime base")
     runtime = _validate_external_path(base / _runtime_identity(root, client), "Runtime directory")
     if runtime.exists():
-        _assert_private_directory(runtime, "Runtime directory")
+        _assert_private_directory(
+            runtime,
+            "Runtime directory",
+            allowed_read_execute_sid=sandbox_sid if client == "codex" else None,
+        )
     try:
         runtime.relative_to(root)
     except ValueError:
@@ -651,7 +810,7 @@ def _validated_historical_executable(value: str, label: str, root: Path) -> Path
 def _resolved_python_executable(root: Path, override: str | None) -> Path:
     candidate = override or str(Path(sys.executable).resolve(strict=True))
     executable = _validated_executable(candidate, "Python executable", root)
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    environment = _credential_free_environment("PYTHON")
     try:
         process = subprocess.run(
             [
@@ -700,7 +859,7 @@ def _resolved_git_executable(root: Path, override: str | None) -> Path:
 
 
 def _isolated_git_environment() -> dict[str, str]:
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment = _credential_free_environment("GIT_")
     environment.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -919,7 +1078,7 @@ def _package_source_identity(
 
 
 def _assert_actual_git_worktree_root(root: Path, git_executable: Path) -> None:
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment = _credential_free_environment("GIT_")
     environment.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -950,7 +1109,7 @@ def _assert_actual_git_worktree_root(root: Path, git_executable: Path) -> None:
 
 
 def _assert_supported_git_index(root: Path, git_executable: Path) -> None:
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment = _credential_free_environment("GIT_")
     environment.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -1100,6 +1259,16 @@ def _client_registry() -> dict[str, Any]:
         minimum_build = profile.get("minimum_build")
         if minimum_build is not None and (not isinstance(minimum_build, str) or not minimum_build.strip()):
             raise InstallError(f"The client profile has an invalid minimum build: {client}")
+        install_supported = profile.get("install_supported")
+        unsupported_reason = profile.get("unsupported_reason")
+        if type(install_supported) is not bool:
+            raise InstallError(f"The client profile has no explicit installation support status: {client}")
+        if install_supported and unsupported_reason is not None:
+            raise InstallError(f"The supported client profile has an unsupported reason: {client}")
+        if not install_supported and (
+            not isinstance(unsupported_reason, str) or not unsupported_reason.strip()
+        ):
+            raise InstallError(f"The unsupported client profile has no reason: {client}")
 
         project = profile.get("project_layout")
         if not isinstance(project, dict):
@@ -1146,7 +1315,8 @@ def _client_registry() -> dict[str, Any]:
         if (
             not isinstance(mcp, dict)
             or not isinstance(mcp.get("path"), str)
-            or mcp.get("renderer") not in {"codex_toml", "claude_json", "gemini_json"}
+            or mcp.get("renderer")
+            not in {"codex_toml", "claude_json", "gemini_json", "antigravity_stdio_json"}
         ):
             raise InstallError(f"The client profile has an invalid MCP template: {client}")
         _validate_relative(mcp["path"])
@@ -1203,6 +1373,17 @@ def _client_profile(client: str) -> dict[str, Any]:
         return _client_profiles()[client]
     except KeyError as exc:
         raise InstallError(f"Unsupported client: {client}") from exc
+
+
+def _assert_client_install_supported(client: str) -> None:
+    profile = _client_profile(client)
+    if profile["install_supported"] is True:
+        return
+    reason = profile["unsupported_reason"]
+    raise InstallError(
+        f"{profile['display_name']} is not supported for new preview, plan, apply, reconnect, or upgrade. "
+        f"{reason} Existing installations remain available only to status, rollback-plan, and rollback."
+    )
 
 
 def _env_flag(environ: Mapping[str, str], name: str) -> bool:
@@ -1389,7 +1570,10 @@ def _replace_json_strings(value: Any, replacements: dict[str, str]) -> Any:
     if isinstance(value, list):
         return [_replace_json_strings(item, replacements) for item in value]
     if isinstance(value, dict):
-        return {key: _replace_json_strings(child, replacements) for key, child in value.items()}
+        return {
+            _replace_json_strings(key, replacements): _replace_json_strings(child, replacements)
+            for key, child in value.items()
+        }
     return value
 
 
@@ -1403,6 +1587,44 @@ def _load_json_source(relative: str) -> dict[str, Any]:
     return value
 
 
+def _antigravity_windows_hook_command(command: str) -> str:
+    powershell_path = _windows_system_tool(
+        "System32/WindowsPowerShell/v1.0/powershell.exe"
+    ).as_posix()
+    if re.fullmatch(r"[A-Za-z]:/[A-Za-z0-9._/-]+", powershell_path) is None:
+        raise InstallError(
+            "The trusted Windows PowerShell path cannot be safely embedded in an Antigravity hook command."
+        )
+    payload = (
+        f"& {command}\n"
+        "$acceptoraExitCode = $LASTEXITCODE\n"
+        "if ($null -eq $acceptoraExitCode) { exit 1 }\n"
+        "exit $acceptoraExitCode"
+    )
+    encoded_payload = base64.b64encode(payload.encode("utf-16le")).decode("ascii")
+    return (
+        f"{powershell_path} -NoLogo -NoProfile -NonInteractive "
+        f"-ExecutionPolicy Bypass -EncodedCommand {encoded_payload}"
+    )
+
+
+def _encode_antigravity_windows_hooks(value: Any, runtime_path: str) -> int:
+    if isinstance(value, list):
+        return sum(_encode_antigravity_windows_hooks(child, runtime_path) for child in value)
+    if not isinstance(value, dict):
+        return 0
+    encoded = 0
+    if value.get("type") == "command":
+        command = value.get("command")
+        if not isinstance(command, str) or runtime_path not in command:
+            raise InstallError("The Antigravity hook template contains an unmanaged command.")
+        value["command"] = _antigravity_windows_hook_command(command)
+        encoded += 1
+    for child in value.values():
+        encoded += _encode_antigravity_windows_hooks(child, runtime_path)
+    return encoded
+
+
 def _render_hooks(
     client: str,
     platform: str,
@@ -1410,20 +1632,23 @@ def _render_hooks(
     python_executable: Path,
 ) -> tuple[str, dict[str, Any]]:
     runtime_path = runtime_root.as_posix()
-    python_command = f'"{python_executable.as_posix()}" -I'
+    python_command = f'"{python_executable.as_posix()}" -B -I'
+    if client == "codex" and platform == "windows":
+        python_command = f'& "{python_executable.as_posix()}" -B -I'
     forbidden = {'"', "\r", "\n", "\x00", "$", "`", "%", "!", "\\"}
     if any(character in runtime_path for character in forbidden):
         raise InstallError("The target path contains characters that cannot be safely embedded in a client hook command.")
+    managed_hook_marker = f"acceptora-target:{runtime_root.name}"
     common_replacements = {
         "{{PYTHON_COMMAND}}": python_command,
         "{{RUNTIME_ROOT}}": runtime_path,
+        "{{RUNTIME_ID}}": runtime_root.name,
     }
     hooks = _client_profile(client)["templates"]["hooks"]
     relative = hooks.get("platform_overrides", {}).get(platform, hooks["default"])
     template = _load_json_source(relative)
     replacements = common_replacements
     rendered = _replace_json_strings(template, replacements)
-    managed_hook_marker = f"acceptora-target:{runtime_root.name}"
 
     def mark_managed_hooks(value: Any) -> None:
         if isinstance(value, list):
@@ -1442,12 +1667,19 @@ def _render_hooks(
         for child in value.values():
             mark_managed_hooks(child)
 
-    mark_managed_hooks(rendered)
+    if client == "antigravity-cli":
+        if _managed_hook_identities(rendered) != {runtime_root.name}:
+            raise InstallError(f"The Antigravity hook template has no unique managed identity: {relative}")
+    else:
+        mark_managed_hooks(rendered)
     serialized = json.dumps(rendered, ensure_ascii=False)
     if re.search(r"\{\{[A-Z][A-Z0-9_]*\}\}", serialized):
         raise InstallError(f"The hook template contains an unresolved installer placeholder: {relative}")
     if re.search(r"(?:^|[\\s\"'])python3(?:[\\s\"']|$)|(?:^|[\\s\"'])py -3(?:[\\s\"']|$)", serialized):
         raise InstallError(f"The hook template contains an unpinned Python command: {relative}")
+    if client == "antigravity-cli" and platform == "windows":
+        if _encode_antigravity_windows_hooks(rendered, runtime_path) == 0:
+            raise InstallError(f"The Antigravity hook template has no managed commands: {relative}")
     return relative, rendered
 
 
@@ -1477,7 +1709,7 @@ def _toml_managed_markers(server_alias: str) -> tuple[str, str]:
     )
 
 
-def _pinned_hook_runtime() -> str:
+def _pinned_hook_runtime(token_env: str) -> str:
     source = _read_text("adapters/hook_runtime.py").rstrip() + "\n"
     repository_config_loader = '''def _config_path(root: Path) -> Path:
     override = os.environ.get("ACCEPTORA_VERIFICATION_CONFIG")
@@ -1490,7 +1722,7 @@ def _pinned_hook_runtime() -> str:
         raise InstallError("The hook runtime repository-config loader cannot be pinned safely.")
     source = source.replace(repository_config_loader, pinned_config_loader, 1)
     repository_token_loader = '''def _configured_token_value(config: dict[str, Any]) -> str | None:
-    token_env = config.get("token_env", "ACCEPTORA_AGENT_TOKEN")
+    token_env = config.get("token_env")
     if not isinstance(token_env, str) or TOKEN_ENV_PATTERN.fullmatch(token_env) is None:
         return None
     token = os.environ.get(token_env)
@@ -1498,9 +1730,9 @@ def _pinned_hook_runtime() -> str:
 '''
     pinned_token_loader = f'''def _configured_token_value(config: dict[str, Any]) -> str | None:
     token_env = config.get("token_env")
-    if token_env != "{PINNED_TOKEN_ENV}":
+    if token_env != "{token_env}":
         return None
-    token = os.environ.get("{PINNED_TOKEN_ENV}", "")
+    token = os.environ.get("{token_env}", "")
     return token if re.fullmatch(r"{ACCEPTORA_TOKEN_PATTERN}", token) is not None else None
 '''
     if source.count(repository_token_loader) != 1:
@@ -1689,8 +1921,9 @@ def _runtime_files(client: str, config: dict[str, Any], git_executable: Path) ->
         for entry in _iter_release_identity_files()
     }
     generated = [
-        _generated_file("trusted_adapters/hook_runtime.py", _pinned_hook_runtime(), 0o755),
+        _generated_file("trusted_adapters/hook_runtime.py", _pinned_hook_runtime(config["token_env"]), 0o755),
         _generated_file("scripts/build_source_manifest.py", _pinned_manifest_builder(git_executable), 0o755),
+        _source_file("scripts/read_instruction_snapshot.py"),
         _source_file("scripts/validate_checklist_payload.py"),
         _source_file("scripts/validate_gate_response.py"),
         _source_file("config/package-manifest.json"),
@@ -1721,6 +1954,8 @@ def _render_mcp_config(
     token_env: str,
     mcp_url: str,
     server_alias: str,
+    runtime_root: Path | None = None,
+    python_executable: Path | None = None,
 ) -> tuple[str, str | dict[str, Any]]:
     mcp_profile = _client_profile(client)["templates"]["mcp"]
     relative = mcp_profile["path"]
@@ -1728,16 +1963,30 @@ def _render_mcp_config(
     if renderer == "codex_toml":
         rendered = _read_text(relative)
         rendered = rendered.replace('"https://verify.example.test/mcp"', json.dumps(mcp_url, ensure_ascii=False))
-        rendered = rendered.replace("ACCEPTORA_AGENT_TOKEN", token_env)
+        rendered = rendered.replace("ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID", token_env)
         rendered = rendered.replace("[mcp_servers.acceptora]", f'[mcp_servers."{server_alias}"]')
         return relative, rendered.rstrip() + "\n"
 
     config = _load_json_source(relative)
+    if renderer == "antigravity_stdio_json":
+        if runtime_root is None or python_executable is None:
+            raise InstallError("Antigravity MCP rendering requires the pinned runtime and Python executable.")
+        config = _replace_json_strings(
+            config,
+            {
+                "{{PYTHON_EXECUTABLE}}": _normal_path(python_executable),
+                "{{RUNTIME_ROOT}}": runtime_root.as_posix(),
+                "ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID": token_env,
+                "https://verify.example.test/mcp": mcp_url,
+            },
+        )
     servers = config.get("mcpServers")
     if not isinstance(servers, dict) or not isinstance(servers.get("acceptora"), dict):
         raise InstallError(f"The MCP template is missing mcpServers.acceptora: {relative}")
     server = servers["acceptora"]
-    if renderer == "gemini_json":
+    if renderer == "antigravity_stdio_json":
+        server = copy.deepcopy(server)
+    elif renderer == "gemini_json":
         server.pop("type", None)
         server.pop("url", None)
         server["httpUrl"] = mcp_url
@@ -1748,10 +1997,11 @@ def _render_mcp_config(
         server["url"] = mcp_url
     else:
         raise InstallError(f"Unsupported MCP renderer: {renderer}")
-    headers = server.setdefault("headers", {})
-    if not isinstance(headers, dict):
-        raise InstallError(f"The MCP template has invalid headers: {relative}")
-    headers["Authorization"] = f"Bearer ${{{token_env}}}"
+    if renderer != "antigravity_stdio_json":
+        headers = server.setdefault("headers", {})
+        if not isinstance(headers, dict):
+            raise InstallError(f"The MCP template has invalid headers: {relative}")
+        headers["Authorization"] = f"Bearer ${{{token_env}}}"
     return relative, {"mcpServers": {server_alias: server}}
 
 
@@ -1778,6 +2028,17 @@ def _managed_hook_identities(value: Any) -> set[str]:
     return set(MANAGED_HOOK_ID_PATTERN.findall(json.dumps(value, ensure_ascii=False, sort_keys=True).lower()))
 
 
+def _is_managed_hook_group_path(path: tuple[str, ...] | list[str]) -> bool:
+    return (
+        len(path) == 1
+        and MANAGED_HOOK_ID_PATTERN.fullmatch(path[0].casefold()) is not None
+    )
+
+
+def _is_mcp_server_path(path: tuple[str, ...] | list[str]) -> bool:
+    return len(path) == 2 and path[0] == "mcpServers"
+
+
 def _merge_json(base: dict[str, Any], patch: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     merged = copy.deepcopy(base)
     inverse: list[dict[str, Any]] = []
@@ -1791,6 +2052,18 @@ def _merge_json(base: dict[str, Any], patch: dict[str, Any]) -> tuple[dict[str, 
                 inverse.append({"kind": "remove_key", "path": child_path, "value": copy.deepcopy(value)})
                 continue
             current = target[key]
+            if _is_managed_hook_group_path(child_path):
+                if not _json_equal(current, value):
+                    raise InstallError(
+                        f"Existing JSON setting has an ambiguous managed hook reference at {'.'.join(child_path)}"
+                    )
+                continue
+            if _is_mcp_server_path(child_path):
+                if not _json_equal(current, value):
+                    raise InstallError(
+                        f"Existing JSON setting conflicts with the managed MCP server at {'.'.join(child_path)}"
+                    )
+                continue
             if isinstance(current, dict) and isinstance(value, dict):
                 merge(current, value, child_path)
                 continue
@@ -1811,24 +2084,63 @@ def _merge_json(base: dict[str, Any], patch: dict[str, Any]) -> tuple[dict[str, 
                 if desired_managed and (has_legacy_managed or matching_existing) and (
                     has_legacy_managed
                     or len(matching_existing) != len(desired_managed)
-                    or any(item not in desired_managed for item in matching_existing)
+                    or any(
+                        not any(_json_equal(item, desired_item) for desired_item in desired_managed)
+                        for item in matching_existing
+                    )
                 ):
                     raise InstallError(
                         f"Existing JSON setting has an ambiguous managed hook reference at {'.'.join(child_path)}"
                     )
                 for item in value:
-                    if item in current:
+                    if any(_json_equal(item, current_item) for current_item in current):
                         continue
                     current.append(copy.deepcopy(item))
                     inverse.append(
                         {"kind": "remove_list_value", "path": child_path, "value": copy.deepcopy(item)}
                     )
                 continue
-            if current != value:
+            if not _json_equal(current, value):
                 raise InstallError(f"Existing JSON setting conflicts at {'.'.join(child_path)}")
 
     merge(merged, patch, [])
     return merged, inverse
+
+
+def _external_json_rollback_changes(operation: dict[str, Any]) -> list[dict[str, Any]]:
+    action = operation.get("action")
+    if action == "no_change":
+        return []
+    if action == "merge":
+        changes = operation.get("rollback_changes")
+        if not isinstance(changes, list) or not changes:
+            raise InstallError("The external JSON operation has no canonical rollback changes.")
+        return copy.deepcopy(changes)
+    if action != "create":
+        raise InstallError("The external JSON operation has an unsupported rollback action.")
+    desired = _external_json_owned_desired(operation.get("desired"))
+    changes: list[dict[str, Any]] = []
+
+    def collect(value: Any, path: list[str]) -> None:
+        if _is_managed_hook_group_path(path) or _is_mcp_server_path(path):
+            changes.append({"kind": "remove_key", "path": path, "value": copy.deepcopy(value)})
+            return
+        if isinstance(value, dict):
+            for key in sorted(value):
+                collect(value[key], [*path, key])
+            return
+        if isinstance(value, list):
+            changes.extend(
+                {"kind": "remove_list_value", "path": path, "value": copy.deepcopy(item)}
+                for item in value
+            )
+            return
+        changes.append({"kind": "remove_key", "path": path, "value": copy.deepcopy(value)})
+
+    collect(desired, [])
+    if not changes:
+        raise InstallError("The external JSON operation has no canonical owned values.")
+    return changes
 
 
 def _target_state(path: Path) -> str:
@@ -1885,10 +2197,11 @@ def _legacy_package_files(target_skill_root: Path) -> list[dict[str, str]]:
 
 def build_preview(args: argparse.Namespace) -> dict[str, Any]:
     """Build the legacy, non-mutating preview document."""
+    _assert_client_install_supported(args.client)
     root = _validated_root(args.target_root)
     _assert_worktree_boundary(root)
     platform = _resolved_platform(args.platform)
-    _validate_inputs(args.project_id, args.token_env)
+    token_env = _validate_inputs(args.project_id, args.token_env)
     base = _validated_base_url(args.api_base_url)
     mcp_url = _endpoint(base, "/mcp")
     contract_version_url = _endpoint(base, "/api/contract-version")
@@ -1909,7 +2222,14 @@ def build_preview(args: argparse.Namespace) -> dict[str, Any]:
     gitignore_block = _gitignore_content()
     hook_source, hooks = _render_hooks(args.client, platform, runtime_root, python_executable)
     server_alias = f"acceptora-{_runtime_identity(root, args.client)[:12]}"
-    mcp_source, mcp = _render_mcp_config(args.client, PINNED_TOKEN_ENV, mcp_url, server_alias)
+    mcp_source, mcp = _render_mcp_config(
+        args.client,
+        token_env,
+        mcp_url,
+        server_alias,
+        runtime_root,
+        python_executable,
+    )
     project = _render_project_config(args.project_id)
     hook_content = _json_text(hooks)
     mcp_content = mcp if isinstance(mcp, str) else _json_text(mcp)
@@ -1955,6 +2275,7 @@ def build_preview(args: argparse.Namespace) -> dict[str, Any]:
         "client": args.client,
         "platform": platform,
         "target_root": _normal_path(root),
+        "token_env": token_env,
         "external_runtime": {
             "action": "manual_external_copy_review_required" if runtime_root.exists() else "manual_external_copy_create",
             "destination": _normal_path(runtime_root),
@@ -1987,7 +2308,7 @@ def build_preview(args: argparse.Namespace) -> dict[str, Any]:
             "This command is preview-only and never creates, edits, copies, installs, or trusts files.",
             "Review and apply every listed copy, block, and merge manually.",
             "Executable hooks, pinned policy, state, and the receipt must remain in the external runtime.",
-            "Credential values must remain in ACCEPTORA_AGENT_TOKEN and must not be pasted into managed files.",
+            f"Credential values must remain in {token_env} and must not be pasted into managed files.",
         ],
     }
 
@@ -1999,6 +2320,7 @@ def _text_preview(preview: dict[str, Any]) -> str:
         f"Platform: {preview['platform']}",
         f"Target: {preview['target_root']}",
         f"External runtime: {preview['external_runtime']['destination']}",
+        f"Credential environment variable: {preview['token_env']}",
         "",
         f"Skill copy: {preview['skill_copy']['action']} -> {preview['skill_copy']['destination']}",
     ]
@@ -2010,13 +2332,20 @@ def _text_preview(preview: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _validate_inputs(project_id: str, token_env: str) -> None:
-    if not ENV_NAME_PATTERN.fullmatch(token_env):
-        raise InstallError("The token environment-variable name is invalid.")
-    if token_env != PINNED_TOKEN_ENV:
-        raise InstallError(f"The hook runtime token environment variable is pinned to {PINNED_TOKEN_ENV}.")
+def _project_token_env(project_id: str) -> str:
     if project_id != "proj_REPLACE_WITH_PROJECT_ULID" and not PROJECT_ID_PATTERN.fullmatch(project_id):
         raise InstallError("The project ID must use the public proj_<ULID> form.")
+    token_env = f"{PROJECT_TOKEN_ENV_PREFIX}{project_id.upper()}"
+    if ENV_NAME_PATTERN.fullmatch(token_env) is None:
+        raise InstallError("The project-derived token environment-variable name is invalid.")
+    return token_env
+
+
+def _validate_inputs(project_id: str, token_env: str | None) -> str:
+    expected = _project_token_env(project_id)
+    if token_env is not None and token_env != expected:
+        raise InstallError(f"The hook runtime token environment variable is pinned to {expected}.")
+    return expected
 
 
 def _gitignore_content() -> str:
@@ -2273,9 +2602,9 @@ def _plan_codex_mcp(
             "end_marker": end_marker,
             "expected_before_sha256": before_hash,
             "expected_after_sha256": before_hash,
-            "action": "no_change" if existing_server == desired_server else "conflict",
+            "action": "no_change" if _json_equal(existing_server, desired_server) else "conflict",
         }
-        if existing_server == desired_server:
+        if _json_equal(existing_server, desired_server):
             return operation, None
         return operation, "An existing semantic Codex MCP server definition conflicts with this installation."
     return _plan_managed_text(
@@ -2344,7 +2673,12 @@ def _plan_json_merge(
         operation.update({"action": "create", "expected_after_sha256": _sha256_bytes(after)})
         return operation, None
     try:
-        existing = json.loads(target.read_text(encoding="utf-8"))
+        existing_body = target.read_bytes()
+        existing = (
+            {}
+            if operation_kind == "external_json_merge" and existing_body == b""
+            else json.loads(existing_body.decode("utf-8"))
+        )
     except (UnicodeDecodeError, json.JSONDecodeError):
         operation["action"] = "conflict"
         return operation, "The managed JSON destination is not a valid UTF-8 JSON document."
@@ -2370,11 +2704,15 @@ def _plan_json_merge(
     return operation, None
 
 
-def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[str, Any]:
+def _build_plan(
+    args: argparse.Namespace,
+    *,
+    historical: bool = False,
+) -> dict[str, Any]:
     root = _validated_root(args.target_root)
     _assert_worktree_boundary(root)
     platform = _resolved_platform(args.platform)
-    _validate_inputs(args.project_id, args.token_env)
+    token_env = _validate_inputs(args.project_id, args.token_env)
     base = _validated_base_url(args.api_base_url)
     api_base_url = urlunsplit((base.scheme, base.netloc, base.path.rstrip("/"), "", ""))
     mcp_url = _endpoint(base, "/mcp")
@@ -2415,7 +2753,7 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
             "source_adapter": "git",
             "target_root": _normal_path(root),
             "client": args.client,
-            "token_env": PINNED_TOKEN_ENV,
+            "token_env": token_env,
             "mcp_url": mcp_url,
             "contract_version_url": contract_version_url,
             "completion_gate_url": completion_gate_url,
@@ -2454,7 +2792,14 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
     add(_plan_gitignore(root, _gitignore_content()))
     add(_plan_json_merge(root, "project-config", ".verification/config.json", project))
     hook_source, hooks = _render_hooks(args.client, platform, runtime_root, python_executable)
-    mcp_source, mcp = _render_mcp_config(args.client, PINNED_TOKEN_ENV, mcp_url, server_alias)
+    mcp_source, mcp = _render_mcp_config(
+        args.client,
+        token_env,
+        mcp_url,
+        server_alias,
+        runtime_root,
+        python_executable,
+    )
     if isinstance(mcp, str):
         start_marker, end_marker = _toml_managed_markers(server_alias)
         block = f"{start_marker}\n{mcp.rstrip()}\n{end_marker}\n"
@@ -2527,7 +2872,7 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
             "git_executable": _normal_path(git_executable),
             "project_id": args.project_id,
             "api_base_url": api_base_url,
-            "token_env": PINNED_TOKEN_ENV,
+            "token_env": token_env,
             "skill_repository_url": source_identity["repository_url"],
             "skill_repository_branch": source_identity["branch"],
             "installed_commit_sha": source_identity["commit_sha"],
@@ -2548,7 +2893,7 @@ def _build_plan(args: argparse.Namespace, *, historical: bool = False) -> dict[s
             "Executable hooks, pinned runtime policy, session state, and the receipt live outside the target repository.",
             "Hooks and MCP endpoint configuration are merged into the selected user-scope client configuration.",
             f"Future apply, status, rollback-plan, and rollback commands must use the trusted installer at {_normal_path(trusted_installer)}.",
-            "The runtime token environment variable is fixed to ACCEPTORA_AGENT_TOKEN and its value is never read by the installer.",
+            f"The runtime token environment variable is fixed to {token_env} for this Acceptora project and its value is never read by the installer.",
             "Client trust and tool approvals remain user-controlled.",
         ],
     }
@@ -2588,6 +2933,7 @@ def _atomic_write(
     *,
     create_only: bool = False,
     private: bool = False,
+    expected_before: str | None | object = _UNSPECIFIED,
 ) -> None:
     _assert_no_link_chain(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2627,6 +2973,8 @@ def _atomic_write(
         current_parent = path.parent.stat()
         if (current_parent.st_dev, current_parent.st_ino) != (parent_identity.st_dev, parent_identity.st_ino):
             raise InstallError("Managed destination parent changed during an atomic write.")
+        if expected_before is not _UNSPECIFIED and _file_hash(path) != expected_before:
+            raise InstallError(f"Managed destination changed during an atomic write: {path}")
         if create_only:
             try:
                 os.link(temporary, path, follow_symlinks=False)
@@ -2666,11 +3014,12 @@ def _atomic_write(
 
 
 class _Transaction:
-    def __init__(self) -> None:
+    def __init__(self, *, allowed_runtime_read_execute_sid: str | None = None) -> None:
         self._before: dict[Path, tuple[bytes, int] | None] = {}
         self._after: dict[Path, str | None] = {}
         self._created_directories: set[Path] = set()
         self._private_paths: set[Path] = set()
+        self._allowed_runtime_read_execute_sid = allowed_runtime_read_execute_sid
 
     def ensure_directory(self, path: Path, *, private: bool = False, secure_boundary: bool = False) -> None:
         missing: list[Path] = []
@@ -2684,9 +3033,18 @@ class _Transaction:
             directory.mkdir(mode=0o700 if private and os.name != "nt" else 0o777)
             self._created_directories.add(directory)
             if private and (os.name != "nt" or secure_boundary):
-                _secure_private_directory(directory)
+                _secure_private_directory(
+                    directory,
+                    allowed_read_execute_sid=(
+                        self._allowed_runtime_read_execute_sid if secure_boundary else None
+                    ),
+                )
         if private and path.exists() and secure_boundary:
-            _assert_private_directory(path, "External runtime directory")
+            _assert_private_directory(
+                path,
+                "External runtime directory",
+                allowed_read_execute_sid=self._allowed_runtime_read_execute_sid,
+            )
 
     def write(
         self,
@@ -2722,12 +3080,21 @@ class _Transaction:
             0o600 if private_output else (mode if mode is not None else (existing_mode or 0o644)),
             create_only=expected_before is None,
             private=private_output,
+            expected_before=expected_before,
         )
 
-    def remove(self, path: Path, *, expected_sha256: str | None | object = _UNSPECIFIED) -> None:
+    def remove(
+        self,
+        path: Path,
+        *,
+        expected_sha256: str | None | object = _UNSPECIFIED,
+        private_output: bool = False,
+    ) -> None:
         current_hash = _file_hash(path)
         if expected_sha256 is not _UNSPECIFIED and current_hash != expected_sha256:
             raise InstallError(f"Managed destination changed immediately before removal: {path}")
+        if private_output:
+            self._private_paths.add(path)
         if path not in self._before:
             if not path.exists():
                 self._before[path] = None
@@ -2933,11 +3300,19 @@ def _apply_operation(
         before = b"" if operation["expected_before_sha256"] is None else target.read_bytes()
         if action == "create":
             after = operation["content"].encode("utf-8")
-            rollback = {"kind": "remove_created_file"}
+            rollback = (
+                {"kind": "remove_managed_block"}
+                if kind == "external_managed_text"
+                else {"kind": "remove_created_file"}
+            )
         elif action == "append":
             suffix = operation["append_text"].encode("utf-8")
             after = before + suffix
-            rollback = {"kind": "remove_suffix", "suffix": operation["append_text"]}
+            rollback = (
+                {"kind": "remove_managed_block"}
+                if kind == "external_managed_text"
+                else {"kind": "remove_suffix", "suffix": operation["append_text"]}
+            )
         else:
             raise InstallError(f"Unsupported managed-text action: {action}")
         if _sha256_bytes(after) != operation["expected_after_sha256"]:
@@ -2969,11 +3344,20 @@ def _apply_operation(
     if kind in {"json_merge", "external_json_merge"}:
         if action == "create":
             after = _json_text(operation["desired"]).encode("utf-8")
-            inverse: list[dict[str, Any]] = []
-            rollback = {"kind": "remove_created_file"}
+            inverse = _external_json_rollback_changes(operation) if kind == "external_json_merge" else []
+            rollback = (
+                {"kind": "remove_owned_json", "changes": inverse}
+                if kind == "external_json_merge"
+                else {"kind": "remove_created_file"}
+            )
         elif action == "merge":
             try:
-                current = json.loads(target.read_text(encoding="utf-8"))
+                current_body = target.read_bytes()
+                current = (
+                    {}
+                    if kind == "external_json_merge" and current_body == b""
+                    else json.loads(current_body.decode("utf-8"))
+                )
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise InstallError(f"Managed JSON changed after planning: {operation['target']}") from exc
             if not isinstance(current, dict):
@@ -2982,7 +3366,11 @@ def _apply_operation(
             if inverse != operation.get("rollback_changes"):
                 raise InstallError(f"Managed JSON rollback changed after planning: {operation['target']}")
             after = _json_text(merged).encode("utf-8")
-            rollback = {"kind": "json_inverse", "changes": operation["rollback_changes"]}
+            rollback = (
+                {"kind": "remove_owned_json", "changes": _external_json_rollback_changes(operation)}
+                if kind == "external_json_merge"
+                else {"kind": "json_inverse", "changes": operation["rollback_changes"]}
+            )
         else:
             raise InstallError(f"Unsupported JSON action: {action}")
         if _sha256_bytes(after) != operation["expected_after_sha256"]:
@@ -3013,7 +3401,13 @@ def _apply_plan(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
         raise InstallError("An installation receipt already exists; inspect status or roll it back first.")
     for operation in plan["operations"]:
         _preflight_operation(root, operation)
-    transaction = _Transaction()
+    transaction = _Transaction(
+        allowed_runtime_read_execute_sid=(
+            _windows_codex_sandbox_users_sid()
+            if os.name == "nt" and plan["client"] == "codex"
+            else None
+        )
+    )
     receipt_operations: list[dict[str, Any]] = []
     mutations = 0
     try:
@@ -3055,6 +3449,7 @@ def _apply_plan(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
         "runtime_root": plan["runtime_root"],
         "runtime_base": plan["inputs"]["runtime_base"],
         "installed_commit_sha": plan["package"]["source"]["commit_sha"],
+        "token_env": plan["inputs"]["token_env"],
         "plan_sha256": plan["plan_sha256"],
         "receipt": plan["receipt"],
         "trusted_installer": plan["trusted_installer"],
@@ -3159,6 +3554,8 @@ def _validate_historical_plan_actions(plan: dict[str, Any]) -> None:
         }.get(base_kind if kind not in {"copy_tree", "external_runtime"} else kind, set())
         if action not in allowed:
             raise InstallError(f"The historical install plan has an invalid action for {operation_id}.")
+        if "external_json_origin" in operation:
+            raise InstallError(f"The historical external JSON origin is unsupported for {operation_id}.")
         before = operation.get("expected_before_sha256")
         after = operation.get("expected_after_sha256")
         if kind in {"copy_tree", "external_runtime"}:
@@ -3194,8 +3591,10 @@ def _validate_historical_plan_actions(plan: dict[str, Any]) -> None:
             if not isinstance(changes, list) or not changes:
                 raise InstallError(f"The historical JSON merge is missing canonical rollback changes: {operation_id}.")
             allowed_changes = _allowed_json_rollback_changes(operation.get("desired", {}))
-            if any(change not in allowed_changes for change in changes) or len(changes) != len(
-                {_canonical_json_bytes(change) for change in changes}
+            allowed_encoded = {_canonical_json_bytes(change) for change in allowed_changes}
+            encoded_changes = [_canonical_json_bytes(change) for change in changes]
+            if any(change not in allowed_encoded for change in encoded_changes) or len(encoded_changes) != len(
+                set(encoded_changes)
             ):
                 raise InstallError(f"The historical JSON rollback exceeds canonical content: {operation_id}.")
         elif "rollback_changes" in operation:
@@ -3250,7 +3649,12 @@ def _expected_receipt_operation(root: Path, plan_operation: dict[str, Any]) -> d
         return operation
     if action == "no_change":
         return operation
-    if action == "create":
+    if kind == "external_managed_text":
+        operation["rollback"] = {"kind": "remove_managed_block"}
+    elif kind == "external_json_merge":
+        changes = _external_json_rollback_changes(plan_operation)
+        operation["rollback"] = {"kind": "remove_owned_json", "changes": changes}
+    elif action == "create":
         operation["rollback"] = {"kind": "remove_created_file"}
     elif base_kind in {"managed_text", "append_lines"} and action == "append":
         operation["rollback"] = {"kind": "remove_suffix", "suffix": plan_operation["append_text"]}
@@ -3344,7 +3748,221 @@ def _receipt_file_path(root: Path, runtime_root: Path, operation: dict[str, Any]
     return _safe_target(root, value)
 
 
-def _receipt_operation_state(root: Path, runtime_root: Path, operation: dict[str, Any]) -> dict[str, Any]:
+def _managed_text_block_bounds(text: str, operation: dict[str, Any]) -> tuple[int, int] | None:
+    content = operation.get("content")
+    start_marker = operation.get("start_marker")
+    end_marker = operation.get("end_marker")
+    if not all(isinstance(value, str) and value for value in (content, start_marker, end_marker)):
+        raise InstallError("The historical managed-text operation is incomplete.")
+    if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+        return None
+    beginning = text.index(start_marker)
+    if beginning != 0 and text[beginning - 1] != "\n":
+        return None
+    end_beginning = text.index(end_marker)
+    if end_beginning < beginning:
+        return None
+    finish = end_beginning + len(end_marker)
+    if finish < len(text) and not text.startswith(("\r\n", "\n"), finish):
+        return None
+    if text[beginning:finish].strip() != content.strip():
+        return None
+    if text[finish : finish + 2] == "\r\n":
+        finish += 2
+    elif text[finish : finish + 1] == "\n":
+        finish += 1
+    return beginning, finish
+
+
+def _codex_mcp_server(content: str) -> tuple[str, Any]:
+    try:
+        document = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise InstallError("The historical Codex MCP content is invalid.") from exc
+    servers = document.get("mcp_servers")
+    if not isinstance(servers, dict) or len(servers) != 1:
+        raise InstallError("The historical Codex MCP content has an ambiguous server alias.")
+    alias = next(iter(servers))
+    return alias, servers[alias]
+
+
+def _external_managed_text_is_owned(path: Path, operation: dict[str, Any]) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+        current = tomllib.loads(text)
+    except (FileNotFoundError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+    alias, desired_server = _codex_mcp_server(str(operation.get("content", "")))
+    servers = current.get("mcp_servers")
+    if not isinstance(servers, dict) or alias not in servers or not _json_equal(servers[alias], desired_server):
+        return False
+    if operation.get("action") == "no_change":
+        return True
+    return _managed_text_block_bounds(text, operation) is not None
+
+
+def _external_json_owned_desired(desired: Any) -> dict[str, Any]:
+    if not isinstance(desired, dict):
+        raise InstallError("The historical external JSON operation is invalid.")
+    return {key: copy.deepcopy(value) for key, value in desired.items() if key != "$schema"}
+
+
+def _managed_list_is_unambiguous(current: list[Any], expected: list[Any]) -> bool:
+    expected_managed = [item for item in expected if _contains_managed_reference(item)]
+    expected_identities = (
+        set().union(*(_managed_hook_identities(item) for item in expected_managed))
+        if expected_managed
+        else set()
+    )
+    if expected_managed and len(expected_identities) != 1:
+        return False
+    for item in current:
+        if not _contains_managed_reference(item):
+            continue
+        identities = _managed_hook_identities(item)
+        if not identities:
+            return False
+        if identities.intersection(expected_identities) and not any(
+            _json_equal(item, expected_item) for expected_item in expected_managed
+        ):
+            return False
+    return True
+
+
+def _json_contains_owned(current: Any, owned: Any, path: tuple[str, ...] = ()) -> bool:
+    if _is_managed_hook_group_path(path):
+        return _json_equal(current, owned)
+    if isinstance(owned, dict):
+        if not isinstance(current, dict):
+            return False
+        for key, value in owned.items():
+            if key not in current:
+                return False
+            if path == () and key == "mcpServers":
+                if not isinstance(value, dict) or not isinstance(current[key], dict):
+                    return False
+                if any(
+                    alias not in current[key] or not _json_equal(current[key][alias], server)
+                    for alias, server in value.items()
+                ):
+                    return False
+                continue
+            if not _json_contains_owned(current[key], value, (*path, key)):
+                return False
+        return True
+    if isinstance(owned, list):
+        if not isinstance(current, list):
+            return False
+        if not _managed_list_is_unambiguous(current, owned):
+            return False
+        return all(
+            sum(1 for item in current if _json_equal(item, expected)) == 1
+            for expected in owned
+        )
+    return _json_equal(current, owned)
+
+
+def _subtract_json_value(value: Any, expected: Any, path: tuple[str, ...]) -> tuple[Any, bool]:
+    if _is_managed_hook_group_path(path):
+        if not _json_equal(value, expected):
+            raise InstallError("A managed JSON hook changed after installation.")
+        return None, True
+    if _is_mcp_server_path(path):
+        if not _json_equal(value, expected):
+            raise InstallError("A managed JSON MCP setting changed after installation.")
+        return None, True
+    if isinstance(expected, dict):
+        if not isinstance(value, dict):
+            raise InstallError("A managed JSON setting changed after installation.")
+        updated = copy.deepcopy(value)
+        for key, child in expected.items():
+            if key not in updated:
+                raise InstallError("A managed JSON setting is missing during rollback.")
+            if path == ("mcpServers",):
+                if not _json_equal(updated[key], child):
+                    raise InstallError("A managed JSON MCP setting changed after installation.")
+                del updated[key]
+                continue
+            replacement, remove = _subtract_json_value(updated[key], child, (*path, key))
+            if remove:
+                del updated[key]
+            else:
+                updated[key] = replacement
+        return updated, not updated
+    if isinstance(expected, list):
+        if not isinstance(value, list) or not _managed_list_is_unambiguous(value, expected):
+            raise InstallError("A managed JSON hook changed after installation.")
+        updated = copy.deepcopy(value)
+        for item in expected:
+            matches = [index for index, candidate in enumerate(updated) if _json_equal(candidate, item)]
+            if len(matches) != 1:
+                raise InstallError("A managed JSON hook changed after installation.")
+            del updated[matches[0]]
+        return updated, not updated
+    if not _json_equal(value, expected):
+        raise InstallError("A managed JSON setting changed after installation.")
+    return None, True
+
+
+def _apply_owned_json_changes(current: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
+    result = copy.deepcopy(current)
+    for change in reversed(changes):
+        path = change.get("path")
+        if not isinstance(path, list) or not path or not all(isinstance(part, str) for part in path):
+            raise InstallError("The receipt contains an invalid JSON rollback path.")
+        parent: Any = result
+        for part in path[:-1]:
+            if not isinstance(parent, dict) or part not in parent:
+                raise InstallError("A managed JSON setting is missing during rollback.")
+            parent = parent[part]
+        key = path[-1]
+        if change.get("kind") == "remove_key":
+            if not isinstance(parent, dict) or key not in parent:
+                raise InstallError("A managed JSON setting is missing during rollback.")
+            replacement, remove = _subtract_json_value(parent[key], change.get("value"), tuple(path))
+            if remove:
+                del parent[key]
+            else:
+                parent[key] = replacement
+            continue
+        if change.get("kind") == "remove_list_value":
+            if not isinstance(parent, dict) or not isinstance(parent.get(key), list):
+                raise InstallError("A managed JSON hook changed after installation.")
+            values = parent[key]
+            expected = change.get("value")
+            if not _managed_list_is_unambiguous(values, [expected]):
+                raise InstallError("A managed JSON hook changed after installation.")
+            matches = [index for index, value in enumerate(values) if _json_equal(value, expected)]
+            if len(matches) != 1:
+                raise InstallError("A managed JSON hook changed after installation.")
+            del values[matches[0]]
+            continue
+        raise InstallError("The receipt contains an unsupported JSON rollback operation.")
+    return result
+
+
+def _external_json_is_owned(path: Path, operation: dict[str, Any]) -> bool:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    if not _json_contains_owned(document, _external_json_owned_desired(operation.get("desired"))):
+        return False
+    try:
+        _apply_owned_json_changes(document, _external_json_rollback_changes(operation))
+    except InstallError:
+        return False
+    return True
+
+
+def _receipt_operation_state(
+    root: Path,
+    runtime_root: Path,
+    operation: dict[str, Any],
+    plan_operation: dict[str, Any],
+) -> dict[str, Any]:
     state = {"id": operation.get("id"), "target": operation.get("target"), "state": "unchanged"}
     if operation.get("kind") in {"copy_tree", "external_runtime"}:
         changed: list[str] = []
@@ -3383,7 +4001,15 @@ def _receipt_operation_state(root: Path, runtime_root: Path, operation: dict[str
             state.update({"state": "modified", "changed_paths": sorted(set(changed))})
         return state
     path = _operation_target(root, operation)
-    if _file_hash(path) != operation.get("after_sha256"):
+    current_sha256 = _file_hash(path)
+    state["current_sha256"] = current_sha256
+    if operation.get("kind") == "external_managed_text":
+        unchanged = _external_managed_text_is_owned(path, plan_operation)
+    elif operation.get("kind") == "external_json_merge":
+        unchanged = _external_json_is_owned(path, plan_operation)
+    else:
+        unchanged = current_sha256 == operation.get("after_sha256")
+    if not unchanged:
         state["state"] = "modified"
     return state
 
@@ -3399,7 +4025,11 @@ def _status(root: Path, client: str, runtime_base: str | None) -> dict[str, Any]
             "operations": [],
         }
     _, runtime_root, receipt = loaded
-    states = [_receipt_operation_state(root, runtime_root, operation) for operation in receipt["operations"]]
+    plan_operations = {operation["id"]: operation for operation in receipt["install_plan"]["operations"]}
+    states = [
+        _receipt_operation_state(root, runtime_root, operation, plan_operations[operation["id"]])
+        for operation in receipt["operations"]
+    ]
     modified = [state for state in states if state["state"] == "modified"]
     return {
         "schema_version": 1,
@@ -3411,6 +4041,7 @@ def _status(root: Path, client: str, runtime_base: str | None) -> dict[str, Any]
         "plan_sha256": receipt.get("plan_sha256"),
         "receipt": receipt.get("receipt"),
         "trusted_installer": receipt["install_plan"].get("trusted_installer"),
+        "token_env": receipt["inputs"].get("token_env"),
         "operations": states,
     }
 
@@ -3426,7 +4057,7 @@ def _remove_json_path(document: dict[str, Any], change: dict[str, Any]) -> None:
         parent = parent[part]
     key = path[-1]
     if change["kind"] == "remove_key":
-        if not isinstance(parent, dict) or parent.get(key) != change.get("value"):
+        if not isinstance(parent, dict) or key not in parent or not _json_equal(parent[key], change.get("value")):
             raise InstallError("A managed JSON setting changed after installation.")
         del parent[key]
         return
@@ -3434,7 +4065,7 @@ def _remove_json_path(document: dict[str, Any], change: dict[str, Any]) -> None:
         if not isinstance(parent, dict) or not isinstance(parent.get(key), list):
             raise InstallError("A managed JSON hook changed after installation.")
         values = parent[key]
-        matches = [index for index, value in enumerate(values) if value == change.get("value")]
+        matches = [index for index, value in enumerate(values) if _json_equal(value, change.get("value"))]
         if len(matches) != 1:
             raise InstallError("A managed JSON hook changed after installation.")
         del values[matches[0]]
@@ -3446,6 +4077,8 @@ def _rollback_operation(
     root: Path,
     runtime_root: Path,
     operation: dict[str, Any],
+    plan_operation: dict[str, Any],
+    expected_current_sha256: str | None,
     transaction: _Transaction,
 ) -> int:
     if operation.get("action") == "no_change":
@@ -3457,13 +4090,80 @@ def _rollback_operation(
             transaction.remove(
                 _receipt_file_path(root, runtime_root, operation, entry["path"]),
                 expected_sha256=entry["sha256"],
+                private_output=kind == "external_runtime",
             )
         return len(files)
     target = _operation_target(root, operation)
     rollback = operation.get("rollback", {})
     rollback_kind = rollback.get("kind")
+    if rollback_kind == "remove_managed_block":
+        try:
+            text = target.read_bytes().decode("utf-8")
+        except (FileNotFoundError, UnicodeDecodeError) as exc:
+            raise InstallError(f"Managed text cannot be safely rolled back: {operation['target']}") from exc
+        bounds = _managed_text_block_bounds(text, plan_operation)
+        if bounds is None or not _external_managed_text_is_owned(target, plan_operation):
+            raise InstallError(f"Managed text changed after installation: {operation['target']}")
+        beginning, finish = bounds
+        retained_separator = ""
+        if operation.get("action") == "append":
+            suffix = plan_operation.get("append_text")
+            start_marker = plan_operation.get("start_marker")
+            if isinstance(suffix, str) and isinstance(start_marker, str):
+                marker_offset = suffix.find(start_marker)
+                candidate_beginning = beginning - marker_offset
+                if (
+                    marker_offset >= 0
+                    and candidate_beginning >= 0
+                    and text[candidate_beginning:finish] == suffix
+                ):
+                    beginning = candidate_beginning
+                    unmanaged_tail = text[finish:]
+                    if (
+                        beginning > 0
+                        and unmanaged_tail
+                        and text[beginning - 1] not in "\r\n"
+                        and not unmanaged_tail.startswith(("\r", "\n"))
+                    ):
+                        retained_separator = "\n"
+        restored = text[:beginning] + retained_separator + text[finish:]
+        if operation.get("action") == "create" and not restored.strip():
+            transaction.remove(
+                target,
+                expected_sha256=expected_current_sha256,
+                private_output=kind == "external_managed_text",
+            )
+        else:
+            transaction.write(
+                target,
+                restored.encode("utf-8"),
+                expected_before=expected_current_sha256,
+                private_output=True,
+            )
+        return 1
+    if rollback_kind == "remove_owned_json":
+        try:
+            document = json.loads(target.read_text(encoding="utf-8"))
+        except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InstallError(f"Managed JSON cannot be safely rolled back: {operation['target']}") from exc
+        desired = plan_operation.get("desired")
+        changes = rollback.get("changes")
+        if not isinstance(document, dict) or not isinstance(desired, dict) or not isinstance(changes, list):
+            raise InstallError(f"Managed JSON cannot be safely rolled back: {operation['target']}")
+        restored = _apply_owned_json_changes(document, changes)
+        transaction.write(
+            target,
+            _json_text(restored).encode("utf-8"),
+            expected_before=expected_current_sha256,
+            private_output=True,
+        )
+        return 1
     if rollback_kind == "remove_created_file":
-        transaction.remove(target, expected_sha256=operation.get("after_sha256"))
+        transaction.remove(
+            target,
+            expected_sha256=expected_current_sha256,
+            private_output=str(kind).startswith("external_"),
+        )
         return 1
     if rollback_kind == "remove_suffix":
         body = target.read_bytes()
@@ -3476,7 +4176,7 @@ def _rollback_operation(
         transaction.write(
             target,
             restored,
-            expected_before=operation.get("after_sha256"),
+            expected_before=expected_current_sha256,
             private_output=kind == "external_managed_text",
         )
         return 1
@@ -3492,7 +4192,7 @@ def _rollback_operation(
         transaction.write(
             target,
             _json_text(document).encode("utf-8"),
-            expected_before=operation.get("after_sha256"),
+            expected_before=expected_current_sha256,
             private_output=kind == "external_json_merge",
         )
         return 1
@@ -3506,7 +4206,8 @@ def _runtime_state_files(runtime_root: Path) -> list[dict[str, str]]:
     if _is_linklike(state_root) or not state_root.is_dir():
         raise InstallError("The external runtime state path is not a regular directory.")
     allowed_name = re.compile(
-        r"(?:[A-Za-z0-9_-]{1,120}\.(?:baseline|loop)\.json|pending-sync\.json|skill-update\.json)"
+        r"(?:[A-Za-z0-9_-]{1,120}\.(?:baseline|loop)\.json|pending-sync\.json|skill-update\.json|"
+        r"instructions-proj_[0-9A-HJKMNP-TV-Z]{26}-[a-f0-9]{16}\.json)"
     )
     files: list[dict[str, str]] = []
     for path in sorted(state_root.rglob("*")):
@@ -3522,14 +4223,14 @@ def _runtime_state_files(runtime_root: Path) -> list[dict[str, str]]:
     return files
 
 
-def _rollback_preview_operation(operation: dict[str, Any]) -> dict[str, Any]:
+def _rollback_preview_operation(operation: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     action = operation.get("action")
     rollback = operation.get("rollback", {})
     preview: dict[str, Any] = {
         "id": operation["id"],
         "kind": operation["kind"],
         "target": operation["target"],
-        "expected_current_sha256": operation.get("after_sha256"),
+        "expected_current_sha256": state.get("current_sha256", operation.get("after_sha256")),
     }
     if action == "no_change":
         preview["action"] = "no_change"
@@ -3539,6 +4240,10 @@ def _rollback_preview_operation(operation: dict[str, Any]) -> dict[str, Any]:
         preview["action"] = "remove_created_file"
     elif rollback.get("kind") == "remove_suffix":
         preview.update({"action": "remove_managed_suffix", "suffix": rollback["suffix"]})
+    elif rollback.get("kind") == "remove_managed_block":
+        preview["action"] = "remove_managed_block"
+    elif rollback.get("kind") == "remove_owned_json":
+        preview.update({"action": "remove_owned_json", "changes": rollback["changes"]})
     elif rollback.get("kind") == "json_inverse":
         preview.update({"action": "remove_managed_json_values", "changes": rollback["changes"]})
     else:
@@ -3556,14 +4261,22 @@ def _build_rollback_plan(root: Path, client: str, runtime_base: str | None) -> d
     if loaded is None:
         raise InstallError("No installation receipt exists for this client.")
     receipt_path, runtime_root, receipt = loaded
-    states = [_receipt_operation_state(root, runtime_root, operation) for operation in receipt["operations"]]
+    plan_operations = {operation["id"]: operation for operation in receipt["install_plan"]["operations"]}
+    states = [
+        _receipt_operation_state(root, runtime_root, operation, plan_operations[operation["id"]])
+        for operation in receipt["operations"]
+    ]
+    states_by_id = {state["id"]: state for state in states}
     conflicts = [
         {"operation": state["id"], "target": state["target"], "message": "Installed content changed after apply."}
         for state in states
         if state["state"] == "modified"
     ]
     state_files = _runtime_state_files(runtime_root)
-    operations = [_rollback_preview_operation(operation) for operation in reversed(receipt["operations"])]
+    operations = [
+        _rollback_preview_operation(operation, states_by_id[operation["id"]])
+        for operation in reversed(receipt["operations"])
+    ]
     operations.append(
         {
             "id": "external-runtime-state",
@@ -3636,14 +4349,27 @@ def _verify_rollback_plan(plan: dict[str, Any], accepted: str) -> tuple[Path, Pa
 
 def _execute_rollback(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
     root, runtime_root, receipt_path, receipt = _verify_rollback_plan(plan, accepted)
-    states = [_receipt_operation_state(root, runtime_root, operation) for operation in receipt["operations"]]
+    plan_operations = {operation["id"]: operation for operation in receipt["install_plan"]["operations"]}
+    states = [
+        _receipt_operation_state(root, runtime_root, operation, plan_operations[operation["id"]])
+        for operation in receipt["operations"]
+    ]
     if any(state["state"] == "modified" for state in states):
         raise InstallError("Rollback refused because installed files changed after the accepted rollback plan.")
     transaction = _Transaction()
     mutations = 0
+    rollback_operations = {operation["id"]: operation for operation in plan["operations"]}
     try:
         for operation in reversed(receipt["operations"]):
-            mutations += _rollback_operation(root, runtime_root, operation, transaction)
+            preview_operation = rollback_operations[operation["id"]]
+            mutations += _rollback_operation(
+                root,
+                runtime_root,
+                operation,
+                plan_operations[operation["id"]],
+                preview_operation.get("expected_current_sha256"),
+                transaction,
+            )
         state_operation = next(operation for operation in plan["operations"] if operation["id"] == "external-runtime-state")
         for entry in state_operation["files"]:
             state_path = Path(entry["path"])
@@ -3653,7 +4379,11 @@ def _execute_rollback(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
                 raise InstallError("Rollback runtime-state path exceeds the canonical runtime.") from exc
             if _file_hash(state_path) != entry["sha256"]:
                 raise InstallError("External runtime state changed after the accepted rollback plan.")
-            transaction.remove(state_path, expected_sha256=entry["sha256"])
+            transaction.remove(
+                state_path,
+                expected_sha256=entry["sha256"],
+                private_output=True,
+            )
             mutations += 1
         if _sha256_file(receipt_path) != next(
             operation["expected_current_sha256"] for operation in plan["operations"] if operation["id"] == "installation-receipt"
@@ -3666,6 +4396,7 @@ def _execute_rollback(plan: dict[str, Any], accepted: str) -> dict[str, Any]:
                 for operation in plan["operations"]
                 if operation["id"] == "installation-receipt"
             ),
+            private_output=True,
         )
         mutations += 1
     except Exception:
@@ -3753,6 +4484,8 @@ def _text_result(value: dict[str, Any], plan_path: str | None = None) -> str:
             lines.append("Source: " + " ".join(part for part in (repository, branch, commit) if part))
         if inputs.get("project_id"):
             lines.append(f"Project: {inputs['project_id']}")
+        if inputs.get("token_env"):
+            lines.append(f"Credential environment variable: {inputs['token_env']}")
         if inputs.get("api_base_url"):
             lines.append(f"Origin: {inputs['api_base_url']}")
         lines.append(f"Plan SHA-256: {value['plan_sha256']}")
@@ -3783,7 +4516,7 @@ def _preview_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platform", choices=PLATFORMS, default="auto")
     parser.add_argument("--project-id", default="proj_REPLACE_WITH_PROJECT_ULID")
     parser.add_argument("--api-base-url", default="https://verify.example.test")
-    parser.add_argument("--token-env", default="ACCEPTORA_AGENT_TOKEN")
+    parser.add_argument("--token-env", help="Optional assertion of the project-derived credential variable name.")
     parser.add_argument("--runtime-base")
     parser.add_argument("--client-config-dir")
     parser.add_argument("--python-executable")
@@ -3815,7 +4548,7 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--platform", choices=PLATFORMS, default="auto")
     plan.add_argument("--project-id", default="proj_REPLACE_WITH_PROJECT_ULID")
     plan.add_argument("--api-base-url", default="https://verify.example.test")
-    plan.add_argument("--token-env", default="ACCEPTORA_AGENT_TOKEN")
+    plan.add_argument("--token-env", help="Optional assertion of the project-derived credential variable name.")
     plan.add_argument("--runtime-base")
     plan.add_argument("--client-config-dir")
     plan.add_argument("--python-executable")
@@ -3855,10 +4588,16 @@ def main(argv: list[str] | None = None) -> int:
                 environ=os.environ,
             )
         if arguments.command == "plan":
+            _assert_client_install_supported(arguments.client)
             result = _build_plan(arguments)
             _write_output(result, arguments.output, arguments.format)
         elif arguments.command == "apply":
-            result = _apply_plan(_load_json_file(arguments.plan), arguments.accept_plan_sha256)
+            install_plan = _load_json_file(arguments.plan)
+            plan_client = install_plan.get("client")
+            if not isinstance(plan_client, str):
+                raise InstallError("The install plan has no client identity.")
+            _assert_client_install_supported(plan_client)
+            result = _apply_plan(install_plan, arguments.accept_plan_sha256)
             _write_output(result, None, arguments.format)
         elif arguments.command == "status":
             result = _status(_validated_root(arguments.target_root), arguments.client, arguments.runtime_base)

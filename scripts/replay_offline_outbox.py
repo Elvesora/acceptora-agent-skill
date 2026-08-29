@@ -27,8 +27,9 @@ from validate_gate_response import GateResponseError, validate_gate_response
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PINNED_RUNTIME_CONFIG = PACKAGE_ROOT.parent / "config" / "runtime-config.json"
-PINNED_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN"
+PROJECT_TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_"
 TOKEN_PATTERN = re.compile(r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$")
+PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 SOURCE_DIGEST_PATTERN = re.compile(r"^sha256:[a-f0-9]{64}$")
 SOURCE_REVISION_ID_PATTERN = re.compile(r"^src_[0-9A-HJKMNP-TV-Z]{26}$")
 RESOLUTION_ID_PATTERN = re.compile(r"^resolution_[0-9A-HJKMNP-TV-Z]{26}$")
@@ -964,9 +965,13 @@ def _settings(
     if needs_completion_gate and completion_gate_url is None:
         raise ReplayConfigurationError("completion_gate_url is required by at least one pending record")
 
-    if config.get("token_env") != PINNED_TOKEN_ENV:
-        raise ReplayConfigurationError(f"token_env must be pinned to {PINNED_TOKEN_ENV}")
-    token = _validated_token(os.environ.get(PINNED_TOKEN_ENV))
+    project_id = config.get("project_id")
+    if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
+        raise ReplayConfigurationError("project_id must use the public proj_<ULID> form")
+    expected_token_env = f"{PROJECT_TOKEN_ENV_PREFIX}{project_id.upper()}"
+    if config.get("token_env") != expected_token_env:
+        raise ReplayConfigurationError(f"token_env must be pinned to {expected_token_env}")
+    token = _validated_token(os.environ.get(expected_token_env))
     if completion_gate_url is not None:
         mcp_origin = (urlsplit(mcp_url).scheme, urlsplit(mcp_url).netloc)
         gate_origin = (urlsplit(completion_gate_url).scheme, urlsplit(completion_gate_url).netloc)

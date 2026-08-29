@@ -85,6 +85,8 @@ class GitMainUpdateCheckTest(unittest.TestCase):
             os.environ,
             {
                 "ACCEPTORA_AGENT_TOKEN": "must-not-reach-git",
+                "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV": "must-not-reach-git",
+                "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAA": "must-not-reach-git",
                 "GIT_ASKPASS": "must-not-run",
                 "SSH_ASKPASS": "must-not-run",
             },
@@ -127,6 +129,7 @@ class GitMainUpdateCheckTest(unittest.TestCase):
         self.assertEqual(2, run.call_args.kwargs["timeout"])
         environment = run.call_args.kwargs["env"]
         self.assertNotIn("ACCEPTORA_AGENT_TOKEN", environment)
+        self.assertFalse(any(key.startswith("ACCEPTORA_AGENT_TOKEN_PROJ_") for key in environment))
         self.assertNotIn("GIT_ASKPASS", environment)
         self.assertNotIn("SSH_ASKPASS", environment)
         self.assertEqual("0", environment["GIT_TERMINAL_PROMPT"])

@@ -10,6 +10,7 @@
     "source_descriptor",
     "source_digest",
     "source_manifest",
+    "verification_instruction_context",
     "implementation_change_summary",
     "intent_summary",
     "scope_summary",
@@ -39,6 +40,9 @@
     },
     "source_manifest": {
       "$ref": "common.schema.json#/$defs/sourceManifest"
+    },
+    "verification_instruction_context": {
+      "$ref": "common.schema.json#/$defs/verificationInstructionContext"
     },
     "implementation_change_summary": {
       "type": "string",

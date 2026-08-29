@@ -55,9 +55,15 @@ class PackageStructureTest(unittest.TestCase):
             "adapters/claude/settings.json.example",
             "adapters/claude/settings.windows.json.example",
             "adapters/gemini/hooks.json.example",
+            "adapters/antigravity/hooks.json.example",
+            "adapters/antigravity/antigravity_event.py",
+            "adapters/antigravity/task_start.py",
+            "adapters/antigravity/stop.py",
+            "adapters/antigravity/mcp_stdio_bridge.py",
             "config/codex-mcp.example.toml",
             "config/claude-mcp.example.json",
             "config/gemini-mcp.example.json",
+            "config/antigravity-mcp.example.json",
             "config/client-profiles.json",
             "config/package-manifest.json",
             "references/client-capabilities.md",
@@ -108,7 +114,9 @@ class PackageStructureTest(unittest.TestCase):
         contributing = (PACKAGE_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
         self.assertIn("What you'll have", getting_started)
-        self.assertIn("ACCEPTORA_AGENT_TOKEN", getting_started)
+        self.assertIn("ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>", getting_started)
+        self.assertIn("different projects use different names", getting_started)
+        self.assertIn("rolled back independently", setup)
         self.assertIn("onboarding", getting_started.casefold())
         self.assertIn("plan SHA-256", getting_started)
         self.assertIn("$acceptora", getting_started)
@@ -120,7 +128,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("outside the target worktree", getting_started)
         self.assertIn("[SETUP.md](SETUP.md)", getting_started)
         self.assertIn("--format text", getting_started)
-        self.assertIn("Omit `--client`", getting_started)
+        self.assertIn("Pass `--client` explicitly", getting_started)
+        self.assertIn("mandatory for Antigravity CLI", getting_started)
         self.assertNotIn("npx ", getting_started)
         self.assertNotIn("npm i", getting_started)
         self.assertNotRegex(getting_started, r"extract(?:ed)? to (?:your )?project root")
@@ -128,7 +137,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("## Coding-agent install or update", setup)
         self.assertIn("exact `plan_sha256`", setup)
         self.assertIn("`--format text`", setup)
-        self.assertIn("`--client` may be omitted", setup)
+        self.assertIn("Pass `--client` explicitly in every reviewed installation", setup)
+        self.assertIn("mandatory for Antigravity CLI", setup)
         self.assertIn("[GETTING-STARTED.md](GETTING-STARTED.md)", readme)
         self.assertIn("references/init.md", contributing)
         self.assertIn("references/doctor.md", contributing)
@@ -143,8 +153,14 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("[doctor](references/doctor.md)", skill)
         self.assertIn("completion hook", skill.casefold())
         self.assertIn("reconcile_checklist", skill)
+        self.assertIn("same validated request object", skill)
+        self.assertIn("Do not reconstruct it", skill)
         self.assertIn("Never show a command menu instead of reconciling", skill)
         self.assertNotIn("npx ", skill)
+
+        mcp_contract = (PACKAGE_ROOT / "references" / "mcp-tool-contract.md").read_text(encoding="utf-8")
+        self.assertIn("all 18 required root fields", mcp_contract)
+        self.assertIn("Preserve required arrays even when they are empty", mcp_contract)
 
         self.assertIn("[SETUP.md](../SETUP.md)", init)
         self.assertIn("Coding-agent install or update", init)
@@ -159,7 +175,7 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("omit `--confirm-connection`", doctor)
         self.assertIn("status --client", doctor)
         self.assertIn("Never print", doctor)
-        self.assertIn("ACCEPTORA_AGENT_TOKEN", doctor)
+        self.assertIn("ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>", doctor)
         self.assertIn("$acceptora init", doctor)
         self.assertNotIn("$verify-generated-work", doctor)
         self.assertNotIn("npx ", doctor)
@@ -195,6 +211,72 @@ class PackageStructureTest(unittest.TestCase):
 
         self.assertTrue({"__pycache__/", "*.py[cod]", ".pytest_cache/"}.issubset(ignored))
 
+    def test_checkout_contains_no_python_bytecode(self) -> None:
+        bytecode_paths = sorted(
+            path.relative_to(PACKAGE_ROOT).as_posix()
+            for path in PACKAGE_ROOT.rglob("*")
+            if path.name == "__pycache__" or path.suffix.lower() in {".pyc", ".pyo"}
+        )
+
+        self.assertEqual([], bytecode_paths)
+
+    def test_current_public_fixtures_match_the_package_skill_version(self) -> None:
+        manifest = json.loads((PACKAGE_ROOT / "config" / "package-manifest.json").read_text(encoding="utf-8"))
+        expected = manifest["skill"]["version"]
+        fixture_names = (
+            "hook-gate-payload.json",
+            "sdk-validation-initial.json",
+            "sdk-validation-revision-2.json",
+            "secret-rejection.json",
+            "uncovered-surface.json",
+        )
+
+        for fixture_name in fixture_names:
+            with self.subTest(fixture=fixture_name):
+                fixture = json.loads(
+                    (PACKAGE_ROOT / "tests" / "fixtures" / fixture_name).read_text(encoding="utf-8")
+                )
+                versions = fixture.get("versions", fixture.get("request", {}).get("versions"))
+                self.assertIsInstance(versions, dict)
+                assert isinstance(versions, dict)
+                self.assertEqual(expected, versions.get("skill_version"))
+
+    def test_active_bug_report_placeholder_matches_the_package_skill_version(self) -> None:
+        manifest = json.loads((PACKAGE_ROOT / "config" / "package-manifest.json").read_text(encoding="utf-8"))
+        bug_report = (PACKAGE_ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(
+            encoding="utf-8"
+        )
+        package_version_block = re.search(
+            r"(?ms)^\s+- type: input\s*\n\s+id: package_version\s*\n(?P<body>.*?)(?=^\s+- type:|\Z)",
+            bug_report,
+        )
+
+        self.assertIsNotNone(package_version_block)
+        assert package_version_block is not None
+        placeholder = re.search(
+            r"(?m)^\s+placeholder:\s*(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\s*$",
+            package_version_block.group("body"),
+        )
+
+        self.assertIsNotNone(placeholder)
+        assert placeholder is not None
+        self.assertEqual(manifest["skill"]["version"], placeholder.group("version"))
+
+    def test_documented_isolated_python_commands_also_disable_bytecode(self) -> None:
+        documents = [
+            *PACKAGE_ROOT.glob("*.md"),
+            *(PACKAGE_ROOT / "references").rglob("*.md"),
+            *(PACKAGE_ROOT / "snippets").glob("*.block"),
+            PACKAGE_ROOT / ".github" / "actions" / "prepare-python" / "action.yml",
+        ]
+
+        for path in sorted(documents):
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if " -I " not in line:
+                    continue
+                with self.subTest(path=path.relative_to(PACKAGE_ROOT), line=line_number):
+                    self.assertIn(" -B -I ", line)
+
     def test_github_workflows_use_an_owner_controlled_real_python_copy(self) -> None:
         workflows = {
             name: (PACKAGE_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
@@ -215,6 +297,9 @@ class PackageStructureTest(unittest.TestCase):
                 self.assertNotRegex(workflow, r"chmod[^\n]*(?:hostedtoolcache|source_python)")
 
         self.assertIn('"$SAFE_PYTHON" -m compileall', workflows["tests.yml"])
+        self.assertIn("PYTHONPYCACHEPREFIX: ${{ runner.temp }}/acceptora-pycache-", workflows["tests.yml"])
+        self.assertIn("Reject Python bytecode in the checkout", workflows["tests.yml"])
+        self.assertIn(r"find . \( -type d -name __pycache__", workflows["tests.yml"])
         self.assertIn("workflow_dispatch", workflows["release.yml"])
         self.assertIn('test "$GITHUB_REF" = "refs/heads/main"', workflows["release.yml"])
         self.assertIn("sha256sum --check SHA256SUMS", workflows["release.yml"])
@@ -276,6 +361,92 @@ class PackageStructureTest(unittest.TestCase):
                 continue
             self.assertTrue(document["$id"].startswith("https://www.acceptora.com/contracts/v1/"), path)
 
+    def test_feature_context_include_projection_covers_provider_evidence(self) -> None:
+        expected_include = [
+            "checklist_definitions",
+            "decisions",
+            "comments",
+            "attachments",
+            "history_summary",
+            "source_revisions",
+            "automated_evidence",
+        ]
+        schema = json.loads(
+            (
+                PACKAGE_ROOT
+                / "tests"
+                / "fixtures"
+                / "contracts"
+                / "v1"
+                / "tools"
+                / "get-feature-context.input.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        include = schema["properties"]["include"]
+
+        self.assertEqual(7, include["maxItems"])
+        self.assertTrue(include["uniqueItems"])
+        self.assertEqual(expected_include, include["items"]["enum"])
+
+        output_schema = json.loads(
+            (
+                PACKAGE_ROOT
+                / "tests"
+                / "fixtures"
+                / "contracts"
+                / "v1"
+                / "tools"
+                / "get-feature-context.output.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual("#/$defs/checklistSections", output_schema["properties"]["checklist_sections"]["$ref"])
+        item_properties = output_schema["$defs"]["itemContexts"]["items"]["properties"]
+        self.assertEqual("#/$defs/checklistItemDefinition", item_properties["definition"]["$ref"])
+        definition = output_schema["$defs"]["checklistItemDefinition"]
+        self.assertTrue({"target", "test_data"}.issubset(definition["required"]))
+        self.assertTrue({"target", "test_data"}.issubset(definition["properties"]))
+
+        for relative in ("SKILL.md", "references/mcp-tool-contract.md", "references/rest-api-contract.md"):
+            document = (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(document=relative):
+                for projection in expected_include:
+                    self.assertIn(projection, document)
+
+        for relative in (
+            "SKILL.md",
+            "references/checklist-writing-rules.md",
+            "references/identity-and-reconciliation.md",
+            "references/mcp-tool-contract.md",
+            "references/rest-api-contract.md",
+        ):
+            document = (PACKAGE_ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(definition_document=relative):
+                self.assertIn("checklist_sections", document)
+                self.assertIn("target", document)
+                self.assertIn("test_data", document)
+
+    def test_manifest_repository_locator_is_reused_for_every_source_bound_operation(self) -> None:
+        skill = (PACKAGE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        contract = (PACKAGE_ROOT / "references" / "mcp-tool-contract.md").read_text(encoding="utf-8")
+        identity = (PACKAGE_ROOT / "references" / "identity-and-reconciliation.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("exact emitted `manifest.repository`", skill)
+        self.assertIn("Never reconstruct it from the current working directory", skill)
+        for operation in (
+            "resolve_feature",
+            "reconcile_checklist",
+            "address_feedback",
+            "record_verification_exception",
+            "check_completion_gate",
+        ):
+            with self.subTest(operation=operation):
+                self.assertIn(operation, skill)
+                self.assertIn(operation, contract)
+        self.assertIn("exact `repository` value", identity)
+        self.assertIn("Windows drive-absolute and UNC remotes", identity)
+
     def test_distribution_metadata_and_setup_keep_zip_bound_to_production_main(self) -> None:
         setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
         readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
@@ -300,12 +471,12 @@ class PackageStructureTest(unittest.TestCase):
             manifest["distribution"],
         )
         self.assertEqual("acceptora", manifest["skill"]["name"])
-        self.assertEqual("1.1.0", manifest["skill"]["version"])
+        self.assertEqual("1.2.3", manifest["skill"]["version"])
         self.assertEqual("1.0.0", manifest["integration"]["version"])
         self.assertEqual("1.0.0", manifest["contract"]["version"])
         self.assertEqual("1.0.0", manifest["server"]["version"])
         self.assertNotIn("## [Unreleased]", changelog)
-        self.assertIn("## [1.1.0] - 2026-08-23", changelog)
+        self.assertIn("## [1.2.3] - 2026-08-29", changelog)
         self.assertIn("git clone --depth 1 --branch main --single-branch", setup)
         self.assertIn("https://github.com/Elvesora/acceptora-agent-skill", setup)
         self.assertIn("## Coding-agent install or update", setup)
@@ -343,12 +514,12 @@ class PackageStructureTest(unittest.TestCase):
         setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
 
         self.assertEqual("codex-cli 0.144.0", clients["codex"]["minimum_build"])
-        self.assertEqual("codex-cli 0.147.0", clients["codex"]["reference_build"])
+        self.assertEqual("codex-cli 0.150.1", clients["codex"]["reference_build"])
         self.assertIn('default_tools_approval_mode = "writes"', template)
         self.assertIn("Codex CLI 0.144.0 or newer", readme)
         self.assertIn("Codex CLI 0.144.0 or newer", setup)
 
-    def test_client_provider_registry_is_canonical_and_matches_implemented_profiles(self) -> None:
+    def test_client_provider_registry_is_canonical_and_matches_known_profiles(self) -> None:
         registry = json.loads((PACKAGE_ROOT / "config" / "client-profiles.json").read_text(encoding="utf-8"))
         package_manifest = json.loads(
             (PACKAGE_ROOT / "config" / "package-manifest.json").read_text(encoding="utf-8")
@@ -356,10 +527,17 @@ class PackageStructureTest(unittest.TestCase):
         profiles = registry["clients"]
 
         self.assertEqual(1, registry["schema_version"])
-        self.assertEqual("2026-08-23", registry["capabilities_reviewed_on"])
-        self.assertEqual(["codex", "claude-code", "gemini-cli"], [profile["id"] for profile in profiles])
+        self.assertEqual("2026-08-29", registry["capabilities_reviewed_on"])
+        self.assertEqual(
+            ["codex", "claude-code", "gemini-cli", "antigravity-cli"],
+            [profile["id"] for profile in profiles],
+        )
         self.assertTrue(
             {"supported_clients", "reference_client_builds", "minimum_client_builds"}.isdisjoint(package_manifest)
+        )
+        self.assertEqual(
+            ["codex", "claude-code", "gemini-cli"],
+            [profile["id"] for profile in profiles if profile["install_supported"]],
         )
 
         expected = {
@@ -396,10 +574,26 @@ class PackageStructureTest(unittest.TestCase):
                 "mcp": {"base": "client_config", "path": "settings.json"},
                 "events": {"SessionStart", "BeforeAgent", "AfterAgent"},
             },
+            "antigravity-cli": {
+                "project_layout": {
+                    "skill_directory": ".agents/skills/acceptora",
+                    "instruction_file": "AGENTS.md",
+                    "instruction_source": "snippets/AGENTS.md.block",
+                },
+                "default_directory": ".gemini/config",
+                "settings": {"base": "client_config", "path": "hooks.json"},
+                "mcp": {"base": "client_config", "path": "mcp_config.json"},
+                "events": {"PreInvocation", "Stop"},
+            },
         }
         for profile in profiles:
             client = profile["id"]
             with self.subTest(client=client):
+                if profile["install_supported"]:
+                    self.assertIsNone(profile["unsupported_reason"])
+                else:
+                    self.assertIsInstance(profile["unsupported_reason"], str)
+                    self.assertTrue(profile["unsupported_reason"].strip())
                 current = expected[client]
                 self.assertEqual(current["project_layout"], profile["project_layout"])
                 self.assertEqual(current["default_directory"], profile["user_config"]["default_directory"])
@@ -414,10 +608,20 @@ class PackageStructureTest(unittest.TestCase):
                 hook_templates.extend(profile["templates"]["hooks"]["platform_overrides"].values())
                 for relative in hook_templates:
                     hook_document = json.loads((PACKAGE_ROOT / relative).read_text(encoding="utf-8"))
-                    self.assertEqual(current["events"], set(hook_document["hooks"]), relative)
+                    if client == "antigravity-cli":
+                        self.assertEqual(["acceptora-target:{{RUNTIME_ID}}"], list(hook_document), relative)
+                        hook_events = next(iter(hook_document.values()))
+                    else:
+                        hook_events = hook_document["hooks"]
+                    self.assertEqual(current["events"], set(hook_events), relative)
                     hook_text = json.dumps(hook_document)
                     for adapter in profile["runtime_adapters"]:
-                        self.assertIn(f"/{adapter}", hook_text)
+                        expected_adapter_path = (
+                            f"/trusted_adapters/antigravity/{Path(adapter).name}"
+                            if client == "antigravity-cli"
+                            else f"/{adapter}"
+                        )
+                        self.assertIn(expected_adapter_path, hook_text)
 
                 referenced_files = {
                     profile["project_layout"]["instruction_source"],
@@ -463,12 +667,14 @@ class PackageStructureTest(unittest.TestCase):
                     self.assertIn(check, normalized_matrix)
                 for url in profile["official_docs"].values():
                     self.assertIn(url, matrix)
+                if not profile["install_supported"]:
+                    self.assertIn(profile["unsupported_reason"], matrix)
 
     def test_gemini_reference_build_supports_the_documented_reload_checks(self) -> None:
         registry = json.loads((PACKAGE_ROOT / "config" / "client-profiles.json").read_text(encoding="utf-8"))
         gemini = next(profile for profile in registry["clients"] if profile["id"] == "gemini-cli")
 
-        self.assertEqual("0.56.0", gemini["reference_build"])
+        self.assertEqual("0.57.0", gemini["reference_build"])
         self.assertIn("/skills reload", gemini["discovery_checks"])
         self.assertIn("/mcp reload or gemini mcp list", gemini["discovery_checks"])
 

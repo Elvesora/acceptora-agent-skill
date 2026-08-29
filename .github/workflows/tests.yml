@@ -39,12 +39,16 @@ jobs:
       - name: Compile Python sources
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/acceptora-pycache-${{ matrix.python }}
         run: '"$SAFE_PYTHON" -m compileall -q adapters scripts tests'
 
       - name: Run package tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: '"$SAFE_PYTHON" -m unittest discover -s tests -p "test_*.py"'
+
+      - name: Reject Python bytecode in the checkout
+        run: test -z "$(find . \( -type d -name __pycache__ -o -type f \( -name '*.pyc' -o -name '*.pyo' \) \) -print -quit)"
 
       - name: Build the production-main ZIP bundle
         if: matrix.python == '3.14' && github.ref == 'refs/heads/main'

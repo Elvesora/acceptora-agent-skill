@@ -11,7 +11,7 @@ body:
     attributes:
       label: Package version
       description: The exact version from config/package-manifest.json plus the installed source commit from installer status or the bundle manifest.
-      placeholder: 1.1.0
+      placeholder: 1.2.3
     validations:
       required: true
   - type: input

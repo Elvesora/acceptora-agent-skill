@@ -80,7 +80,14 @@ def _run_git(
     check: bool = True,
     input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    environment: dict[str, str] = {}
+    for key in os.environ:
+        normalized = key.upper()
+        if normalized == "ACCEPTORA_AGENT_TOKEN" or normalized.startswith(
+            ("GIT_", "ACCEPTORA_AGENT_TOKEN_")
+        ):
+            continue
+        environment[key] = os.environ[key]
     environment.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -115,10 +122,17 @@ def find_repository_root(start: str | os.PathLike[str]) -> Path:
     return candidate
 
 
-def _sanitise_remote(remote: str) -> str:
+def canonicalize_repository_locator(remote: str) -> str:
+    """Return the credential-free, cross-client repository locator."""
+
     value = remote.strip()
     if not value:
         return ""
+    if re.match(r"^[A-Za-z]:[\\/]", value):
+        normalized = value.replace("\\", "/")
+        return normalized[0].upper() + normalized[1:]
+    if re.match(r"^(?:\\\\|//)[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$", value):
+        return value.replace("\\", "/")
     if "://" in value:
         parsed = urlsplit(value)
         host = parsed.hostname or ""
@@ -127,6 +141,10 @@ def _sanitise_remote(remote: str) -> str:
         return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     # Preserve SSH-style user@host:path locators; reject accidental secret-like userinfo.
     return re.sub(r"^[^@/]+@(?=[^:]+:)", "git@", value)
+
+
+def _sanitise_remote(remote: str) -> str:
+    return canonicalize_repository_locator(remote)
 
 
 def _is_junction(path: Path) -> bool:
@@ -476,7 +494,7 @@ def _snapshot_digest(snapshot: dict[str, Any]) -> str:
 
 def _capture_git(root: Path, ignores: tuple[str, ...]) -> dict[str, Any]:
     remote_process = _run_git(root, "config", "--get", "remote.origin.url", check=False)
-    remote = _sanitise_remote(remote_process.stdout.decode("utf-8", errors="replace"))
+    remote = canonicalize_repository_locator(remote_process.stdout.decode("utf-8", errors="replace"))
     repository = remote or f"local:{root.name}"
     _assert_no_hidden_index_entries(root)
     tracked = _tracked_index_entries(root)

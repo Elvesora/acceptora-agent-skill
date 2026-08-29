@@ -8,11 +8,11 @@ Use REST when the agent environment cannot connect to MCP or when any applicatio
 - Credential-bound project metadata: `GET <pinned-origin>/api/v1/integrations/project` with `projects:read`.
 - Final setup confirmation: `POST <pinned-origin>/api/v1/integrations/connection/confirm` with all seven normal workflow scopes and an exact empty JSON object.
 - Take the origin only from the installer-owned external runtime configuration or an origin the user explicitly supplied and reviewed. All Acceptora endpoints must use that exact scheme, host, port, and base path. Never derive a credential destination from repository files, Git branches, request output, redirects, or an environment-controlled URL.
-- Send `Authorization: Bearer <token>` on protected requests. Installed Codex, Claude Code, and Gemini CLI runtimes load it only from `ACCEPTORA_AGENT_TOKEN`; a direct REST client may use any secure secret provider. Never place the value in source, installer state, logs, prompts, URLs, or committed configuration.
+- Send `Authorization: Bearer <token>` on protected requests. Installed Codex, Claude Code, Antigravity CLI, and Gemini CLI runtimes load it only from the project-derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` name pinned by the installer; a direct REST client may use any secure secret provider. Never place the value in source, installer state, logs, prompts, URLs, or committed configuration.
 - Send `Accept: application/json` and `Content-Type: application/json` for POST operations.
 - Preserve `X-Correlation-ID` in diagnostics. Honor `Retry-After` on `429` responses.
 
-Before any write, call project metadata and require the exact configured project ID, active project/workspace lifecycle, compatible versions, and the operation's granted scope. Do not follow redirects with an authorization header.
+Before project work, the installed task-start hook calls project metadata, validates the exact configured project ID and full canonical `verification_instructions` envelope, then atomically stores it outside the repository for the trusted reader. Before any write, require the exact configured project ID, active project/workspace lifecycle, compatible versions, and the operation's granted scope. Do not follow redirects with an authorization header or reuse a stale instruction snapshot.
 
 ## Operation map
 
@@ -28,6 +28,37 @@ Before any write, call project metadata and require the exact configured project
 | `record_verification_exception` | `POST /api/v1/integrations/verification-exceptions` | `exceptions:write` |
 
 The legacy `POST /api/integrations/completion-gate` remains available for installed stop hooks. New integrations should use the versioned path.
+
+Before reconciliation, request the complete feature-context projection:
+
+```http
+POST /api/v1/integrations/features/context HTTP/1.1
+Host: <pinned-host>
+Authorization: Bearer <value loaded from a secure secret provider>
+Accept: application/json
+Content-Type: application/json
+
+{
+  "feature_id": "feat_01J00000000000000000000001",
+  "include": [
+    "checklist_definitions",
+    "decisions",
+    "comments",
+    "attachments",
+    "history_summary",
+    "source_revisions",
+    "automated_evidence"
+  ],
+  "versions": {
+    "integration_name": "acceptora-fixture-client",
+    "integration_version": "1.0.0",
+    "skill_version": "1.2.3",
+    "contract_version": "1.0.0"
+  }
+}
+```
+
+When `checklist_definitions` is requested, consume the returned `checklist_sections` plus every active/retired item's complete immutable `definition`, including `target` and `test_data`. They are the lossless source for retain and update operations; do not rebuild existing definitions from item summary fields.
 
 ## Setup-only connection confirmation
 
@@ -49,15 +80,18 @@ Require the exact response fields `project_id`, `connection_status`, `confirmed_
 
 ## Required workflow sequences
 
+For every sequence below, use the deterministic manifest's exact `repository` value as the repository locator. Reuse it unchanged in feature resolution and every reconciliation, feedback, exception, and completion-gate source descriptor; derive gate `source_identity` only from that locator. Never reconstruct it from the current working directory or another filesystem/Git lookup.
+
 For a normal eligible change:
 
 1. `GET /project` and require the intended project ID, active lifecycle, compatible versions/endpoints, and every scope needed by the planned sequence.
 2. Call `resolve_feature` with an explicit feature ID or exact source aliases. Do not guess after an ambiguous result.
-3. Call `get_feature_context` before proposing a revision.
+3. Call `get_feature_context` with all seven include projections before proposing a revision, and use its returned `checklist_sections` and complete active/retired item `definition` objects as the lossless reconciliation base.
 4. Inspect the final changed artifact and build the deterministic source descriptor, changed-surface manifest, checklist definitions, evidence, limits, and idempotency key required by the OpenAPI request schema.
-5. Call `reconcile_checklist` with the current concurrency bases and complete desired state.
-6. Call `check_completion_gate` for the exact final source digest. If source changes, refetch context and reconcile again.
-7. Call `get_verification_status` and report the returned feature URL, revision, state counts, and open-feedback count.
+5. Immediately call `get_feature_context` again. If the account revision, project revision, or effective digest changed, reread and regenerate every affected part of the checklist with a new logical-write idempotency key.
+6. Call `reconcile_checklist` with the current concurrency bases, complete desired state, and `verification_instruction_context` containing only the fresh revisions and digest.
+7. Call `check_completion_gate` for the exact final source digest. If source changes, refetch context and reconcile again.
+8. Call `get_verification_status` and report the returned feature URL, revision, state counts, and open-feedback count.
 
 When addressing human feedback:
 
@@ -67,6 +101,14 @@ When addressing human feedback:
 4. Refetch `get_feature_context`, reconcile the entire checklist with the resulting source digest and resolution IDs, then run the completion gate and status read again.
 
 Use `record_verification_exception` only for one of the contract's permitted exact-source categories; it is not a shortcut for ordinary work. Every request and response field for these steps is defined by the named OpenAPI operation and its JSON Schema component. Do not invent a reduced payload from this prose.
+
+## Provider-neutral evidence lineage
+
+`reconcile_checklist` and `record_verification_exception` accept an optional `lineage` object on each `automated_evidence` entry. Older evidence without lineage remains valid. When lineage is present, send the complete published object: project and provider-run identity; nullable environment, timing, artifact, cost, stop reason, and original-payload reference; explicit assertion and authentication objects; and bounded usage entries. The evidence entry's top-level `source_revision` and `target` remain authoritative.
+
+The lineage `project_id` must identify the authenticated feature project. `started_at`, `ended_at`, and `duration_ms` may each be null independently; when both timestamps are known they must be ordered, and when all three are known the duration must match the exact elapsed milliseconds. Artifact and original-payload references contain only an absolute URI and lowercase SHA-256 digest. Authentication mode and outcome are both null or both present; mode `none` requires outcome `not_required`. Each usage `(metric, unit)` pair is unique. Assertion-detail values are scalars, strings are limited to 2,000 characters, and request-, response-, body-, payload-, or log-bearing keys are rejected after separator and camel-case normalization. URI references reject standard and signed credential parameters in queries and fragments, including camel-case and percent-encoded keys. Do not send credentials, authorization or cookie headers, signed secrets, or a raw provider payload. Lineage is execution provenance, not evidence sufficiency, a provider verdict, or human acceptance.
+
+Successful `get_feature_context` responses may include `automated_evidence` with the persisted lineage unchanged. Clients must tolerate the field being absent when interoperating with an older compatible server.
 
 ## Request and response behavior
 
@@ -86,7 +128,7 @@ Content-Type: application/json
   "versions": {
     "integration_name": "your-integration",
     "integration_version": "1.0.0",
-    "skill_version": "1.1.0",
+      "skill_version": "1.2.3",
     "contract_version": "1.0.0"
   }
 }

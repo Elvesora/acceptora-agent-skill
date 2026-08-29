@@ -7,13 +7,13 @@ Use this procedure after a post-resolution MCP write exhausted bounded retries. 
 Validate a reconciliation request before saving it through the installer-owned runtime. Commands below use one-line PowerShell syntax with quoted paths; replace every placeholder. On POSIX shells, remove only the leading `&`.
 
 ```text
-& "<absolute-python>" -I "<external-runtime>/package/scripts/validate_checklist_payload.py" "<request.json>" --pretty
+& "<absolute-python>" -B -I "<external-runtime>/package/scripts/validate_checklist_payload.py" "<request.json>" --pretty
 ```
 
 Write the request with the same feature ID and idempotency key present in the payload:
 
 ```text
-& "<absolute-python>" -I "<external-runtime>/package/scripts/write_offline_outbox.py" "<request.json>" --operation reconcile_checklist --feature-id "<feat_ULID>" --idempotency-key "<UUID>" --completion-gate-payload "<completion-gate.json>"
+& "<absolute-python>" -B -I "<external-runtime>/package/scripts/write_offline_outbox.py" "<request.json>" --operation reconcile_checklist --feature-id "<feat_ULID>" --idempotency-key "<UUID>" --completion-gate-payload "<completion-gate.json>"
 ```
 
 The completion-gate payload is optional. Include it for a final reconciliation or exception when the deterministic baseline/current evidence is available. Do not attach it to an intermediate `address_feedback` write whose matching reconciliation has not succeeded.
@@ -22,10 +22,10 @@ The writer rejects secret-like content, payload/CLI identity mismatches, and reu
 
 ## Validate without sending
 
-Use `replay_offline_outbox.py` from the installer-owned external runtime. Its configuration pins the target repository, one Acceptora origin, and `ACCEPTORA_AGENT_TOKEN`. Repository configuration cannot select the credential or destination. Inspect the pinned target's records without network access:
+Use `replay_offline_outbox.py` from the installer-owned external runtime. Its configuration pins the target repository, one Acceptora origin, and the `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` name derived from its public project ID. Repository configuration cannot select the credential or destination. Inspect the pinned target's records without network access:
 
 ```text
-& "<absolute-python>" -I "<external-runtime>/package/scripts/replay_offline_outbox.py" --dry-run
+& "<absolute-python>" -B -I "<external-runtime>/package/scripts/replay_offline_outbox.py" --dry-run
 ```
 
 The replay client refuses credentials in endpoint URLs, refuses plain HTTP except for localhost development, requires every endpoint to share the pinned origin, and never follows redirects. It does not accept repository-controlled endpoint or token-name overrides.
@@ -33,7 +33,7 @@ The replay client refuses credentials in endpoint URLs, refuses plain HTTP excep
 ## Replay
 
 ```text
-& "<absolute-python>" -I "<external-runtime>/package/scripts/replay_offline_outbox.py"
+& "<absolute-python>" -B -I "<external-runtime>/package/scripts/replay_offline_outbox.py"
 ```
 
 For each record, the client:

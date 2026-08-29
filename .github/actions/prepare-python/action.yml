@@ -8,7 +8,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        source_python="$(python -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
+        source_python="$(python -B -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
         safe_root="$HOME/.acceptora-ci-python"
         safe_python="$safe_root/python"
         current_uid="$(id -u)"
@@ -51,6 +51,6 @@ runs:
           candidate="$(dirname -- "$candidate")"
         done
 
-        reported_python="$("$safe_python" -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
+        reported_python="$("$safe_python" -B -I -c 'import os,sys; print(os.path.realpath(sys.executable))')"
         test "$reported_python" = "$safe_python"
         printf 'SAFE_PYTHON=%s\n' "$safe_python" >> "$GITHUB_ENV"
