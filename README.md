@@ -5,7 +5,7 @@
 
 The Acceptora Agent Skill connects coding agents to Acceptora's durable manual-verification workflow. It keeps one source-bound acceptance checklist synchronized after software, content, configuration, API, SDK, integration, data, or deployment changes in any programming language, framework, or mixed-stack repository.
 
-> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). From your Acceptora project, export its project-specific `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable, paste the onboarding prompt into Codex, Claude Code, or a supported Gemini CLI environment, and approve the exact installation-plan digest.
+> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). Export the project's `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable, paste the client's one-line onboarding prompt into the target worktree, and approve the exact installation-plan digest.
 
 This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It retains the Antigravity CLI profile only so an existing installation can be inspected and rolled back. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
 
@@ -19,7 +19,7 @@ No agent operation can make a human verification decision or grant final accepta
 - Authenticated task-start hooks for Codex, Claude Code, and Gemini CLI that fetch owner verification guidance into a private external snapshot, expose only a trusted-reader directive to the model, and fail closed on prompt events when the required reread cannot be completed.
 - Completion hooks for Codex, Claude Code, and Gemini CLI with bounded, visible fail-open behavior after the task-start instruction boundary has succeeded.
 - Supported-client task-start checks that compare the installed commit with the production `main` branch and notify without fetching or applying updates.
-- A deterministic downloadable ZIP snapshot whose embedded provenance binds it to one clean production `main` commit.
+- A deterministic package-owned ZIP builder whose embedded provenance binds generated artifacts to one clean production `main` commit.
 - Streamable HTTP MCP configuration and a language-neutral [REST API contract](references/rest-api-contract.md).
 - Supported-client plan-and-apply installation with exact digest acceptance, conflict detection, status, and digest-bound rollback.
 - A pinned external runtime for health checks, hooks, recovery, and lifecycle commands.
@@ -31,8 +31,7 @@ These requirements run the skill, source adapter, and hooks. They do not constra
 
 - Python 3.11 or newer and Git.
 - Codex CLI 0.144.0 or newer, or a supported Claude Code or Gemini CLI release.
-- The project ID and canonical HTTPS origin shown in Acceptora **Settings > Connection**.
-- A short-lived Acceptora project credential with the scopes listed in [SETUP.md](SETUP.md#agent-client-prerequisites).
+- A short-lived Acceptora project credential with the scopes listed in [SETUP.md](SETUP.md#agent-client-prerequisites), exported under its project-derived variable name.
 - A trusted Git worktree that satisfies the installer's strict source and filesystem checks.
 
 For a direct REST integration, the target environment needs only an HTTPS client, the published OpenAPI contract, and a securely stored project credential; Git, Python, and a coding-agent client are not required.
@@ -47,16 +46,11 @@ The canonical production source and update authority is the `main` branch of:
 
 - `https://github.com/Elvesora/acceptora-agent-skill`
 
-The signed-in Acceptora onboarding page supports two acquisition paths:
-
-- give its project-specific prompt to Codex, Claude Code, or a supported Gemini CLI environment; the agent fresh-clones `main` outside the target worktree and performs the mechanical setup; or
-- download `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip` and extract the entire archive outside the target worktree. Keep `acceptora-agent-skill-provenance.json` beside the extracted `acceptora` directory.
-
-The companion manifest at `https://www.acceptora.com/agent-skill/release-manifest.json` records the exact clean `main` commit, source-tree digest, file digests, ZIP byte length, and ZIP SHA-256. The ZIP is a derived convenience snapshot, not a second update authority. Do not install from another remote or run the installer from the target repository.
+Give the signed-in Acceptora onboarding page's one-line client prompt to Codex, Claude Code, or a supported Gemini CLI environment. It opens that client's `SETUP-*.md` entrypoint; the agent then fresh-clones `main` outside the target worktree and follows the shared lifecycle in `SETUP.md`. The Acceptora application links to this repository but does not mirror or host package artifacts. Do not install from another remote, an application-hosted mirror, or an automatically generated GitHub source archive, and do not run the installer from the target repository.
 
 The secure installation sequence is:
 
-1. Obtain either a fresh canonical `main` checkout or the intact canonical ZIP outside the target worktree.
+1. Obtain a fresh canonical `main` checkout outside the target worktree.
 2. Verify and record the full source commit, then generate a non-mutating installation plan.
 3. Review and explicitly accept the exact plan SHA-256 before apply.
 4. Confirm the receipt records the canonical repository, branch, and commit.
@@ -86,6 +80,7 @@ The installer never reads the token, grants client trust, or approves tools. Rev
 ## Package layout
 
 - [`GETTING-STARTED.md`](GETTING-STARTED.md) is the human tutorial.
+- `SETUP-CODEX.md`, `SETUP-CLAUDE-CODE.md`, and `SETUP-GEMINI-CLI.md` are the client-specific onboarding entrypoints.
 - [`SKILL.md`](SKILL.md) is the `acceptora` skill and routes `$acceptora init`, `$acceptora doctor`, and the default completion workflow.
 - [`references/`](references) contains install and doctor commands, contracts, lifecycle rules, reconciliation guidance, and task-specific patterns loaded only when needed.
 - [`scripts/`](scripts) contains deterministic installation, bundle, validation, health, source-manifest, and recovery tooling.
@@ -109,9 +104,9 @@ git config --local core.autocrlf false
 git config --local --get core.autocrlf
 ```
 
-The second command must print `false`. This does not change the user's global Git configuration. Installation must use one of the verified acquisition paths and the explicit-plan acceptance flow in [SETUP.md](SETUP.md#obtain-the-production-source).
+The second command must print `false`. This does not change the user's global Git configuration. Installation must use the verified acquisition path and the explicit-plan acceptance flow in [SETUP.md](SETUP.md#obtain-the-production-source).
 
-A clean production checkout can also verify the exact downloadable bundle shape:
+A clean production checkout can also verify the exact generated bundle shape:
 
 ```text
 python -B -I scripts/build_release.py --dist-dir "<new-directory-outside-this-checkout>" --source-commit "<full-HEAD-commit>"

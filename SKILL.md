@@ -52,7 +52,7 @@ Apply `analysis_guidance` while understanding and implementing the task. Apply `
 
 Installing, updating, and reconnecting are `init`. Diagnosing a live install is `doctor`. Do not improvise a third setup path.
 
-Use only a fresh checkout of the production `main` branch from `https://github.com/Elvesora/acceptora-agent-skill` or an intact ZIP downloaded from the canonical Acceptora bundle route and extracted outside the target repository. Never install from another remote or mirror. Never apply without the user's explicit acceptance of the exact plan digest. After the first apply, use only the returned installer-owned external `trusted_installer` for later lifecycle commands. The installer never reads the token value, grants MCP trust, or approves hooks. Never print the project-derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` value.
+Use only a fresh checkout of the production `main` branch from `https://github.com/Elvesora/acceptora-agent-skill`, cloned outside the target repository. Never install from another remote, mirror, archive, or already-installed copy. Never apply without the user's explicit acceptance of the exact plan digest. After the first apply, use only the returned installer-owned external `trusted_installer` for later lifecycle commands. The installer never reads the token value, grants MCP trust, or approves hooks. Never print the project-derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` value.
 
 When installing, diagnosing discovery, or reviewing client compatibility, read [client-capabilities.md](references/client-capabilities.md) before using client-specific paths, events, or commands. Treat its date and recorded builds as a reviewed compatibility snapshot, not as proof of the provider's latest release.
 

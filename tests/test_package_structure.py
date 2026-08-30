@@ -48,6 +48,9 @@ class PackageStructureTest(unittest.TestCase):
             "README.md",
             "SECURITY.md",
             "SETUP.md",
+            "SETUP-CODEX.md",
+            "SETUP-CLAUDE-CODE.md",
+            "SETUP-GEMINI-CLI.md",
             "GETTING-STARTED.md",
             "SUPPORT.md",
             "agents/openai.yaml",
@@ -122,7 +125,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("$acceptora", getting_started)
         self.assertIn("$acceptora init", getting_started)
         self.assertIn("$acceptora doctor", getting_started)
-        self.assertIn("extracted `acceptora` directory", getting_started)
+        self.assertIn("Fresh-clone `https://github.com/Elvesora/acceptora-agent-skill`", getting_started)
+        self.assertNotIn("ZIP from that onboarding page", getting_started)
         self.assertNotIn("$verify-generated-work", getting_started)
         self.assertNotIn("extracted `verify-generated-work`", getting_started)
         self.assertIn("outside the target worktree", getting_started)
@@ -135,6 +139,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertNotRegex(getting_started, r"extract(?:ed)? to (?:your )?project root")
 
         self.assertIn("## Coding-agent install or update", setup)
+        self.assertIn("reread the selected client setup file and `SETUP.md`", setup)
+        self.assertIn("Treat the Git worktree where the prompt was submitted as the target", setup)
         self.assertIn("exact `plan_sha256`", setup)
         self.assertIn("`--format text`", setup)
         self.assertIn("Pass `--client` explicitly in every reviewed installation", setup)
@@ -146,6 +152,31 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("references/init.md", contributing)
         self.assertIn("references/doctor.md", contributing)
         self.assertIn("completion workflow", contributing)
+
+    def test_client_setup_entrypoints_fix_the_client_and_delegate_the_shared_lifecycle(self) -> None:
+        setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
+        entrypoints = {
+            "SETUP-CODEX.md": "codex",
+            "SETUP-CLAUDE-CODE.md": "claude-code",
+            "SETUP-GEMINI-CLI.md": "gemini-cli",
+        }
+
+        for filename, client in entrypoints.items():
+            with self.subTest(filename=filename):
+                body = (PACKAGE_ROOT / filename).read_text(encoding="utf-8")
+                self.assertIn("current Git worktree", body)
+                self.assertIn(f"`{client}` as the client", body)
+                self.assertIn("Fresh-clone only the `main` branch", body)
+                self.assertIn("reread this file and `SETUP.md` completely", body)
+                self.assertIn("Coding-agent install or update", body)
+                self.assertIn(filename, setup)
+
+        self.assertIn("https://www.acceptora.com", setup)
+        self.assertIn("ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>", setup)
+        self.assertIn("derive `proj_<ULID>` without reading or printing the credential value", setup)
+        self.assertIn("If more than one exists", setup)
+        self.assertIn("Do not guess", setup)
+        self.assertNotIn("`client`, `project_id`, and `acceptora_origin`", setup)
 
     def test_skill_routes_init_doctor_and_default_completion(self) -> None:
         skill = (PACKAGE_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -450,10 +481,17 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("exact `repository` value", identity)
         self.assertIn("Windows drive-absolute and UNC remotes", identity)
 
-    def test_distribution_metadata_and_setup_keep_zip_bound_to_production_main(self) -> None:
+    def test_distribution_metadata_and_setup_keep_installation_bound_to_production_main(self) -> None:
         setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
         readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
         security = (PACKAGE_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        skill = (PACKAGE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        getting_started = (PACKAGE_ROOT / "GETTING-STARTED.md").read_text(encoding="utf-8")
+        init_reference = (PACKAGE_ROOT / "references" / "init.md").read_text(encoding="utf-8")
+        client_setups = [
+            (PACKAGE_ROOT / filename).read_text(encoding="utf-8")
+            for filename in ("SETUP-CODEX.md", "SETUP-CLAUDE-CODE.md", "SETUP-GEMINI-CLI.md")
+        ]
         contributing = (PACKAGE_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         changelog = (PACKAGE_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         pull_request_template = (PACKAGE_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(
@@ -483,7 +521,8 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("git clone --depth 1 --branch main --single-branch", setup)
         self.assertIn("https://github.com/Elvesora/acceptora-agent-skill", setup)
         self.assertIn("## Coding-agent install or update", setup)
-        self.assertIn("`client`, `target`, `project_id`, and `acceptora_origin`", setup)
+        self.assertIn("selected setup filename fixes the explicit installer client", setup)
+        self.assertIn("fixed package configuration, not a prompt input", setup)
         self.assertIn("For a new installation", setup)
         self.assertIn("For an update", setup)
         self.assertIn("exact `plan_sha256`", setup)
@@ -495,17 +534,21 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("<runtime-root>/install-receipt.json", agent_procedure)
         self.assertNotIn("Post-install and upgrades", agent_procedure)
         self.assertIn("Do not make unrelated project changes", setup)
-        self.assertIn("https://www.acceptora.com/agent-skill/release-manifest.json", setup)
-        self.assertIn("https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip", setup)
-        self.assertIn("acceptora-agent-skill-provenance.json", setup)
-        self.assertIn("beside the `acceptora` directory", setup)
-        self.assertIn("generated from one clean `main` commit", setup)
-        self.assertIn("downloadable ZIP snapshot", readme)
+        for installation_document in (setup, security, skill, getting_started, init_reference, *client_setups):
+            with self.subTest(document=installation_document[:40]):
+                self.assertNotIn("https://www.acceptora.com/agent-skill/", installation_document)
+                self.assertNotIn("application-hosted ZIP", installation_document)
+                self.assertNotIn("intact ZIP", installation_document)
+                self.assertNotIn("verified-ZIP installation", installation_document)
+
+        self.assertIn("only supported acquisition path", setup)
+        self.assertIn("package-owned ZIP builder", readme)
         self.assertIn("GETTING-STARTED.md", readme)
-        self.assertIn("Acceptora-hosted ZIP derived from a clean `main` commit", security)
+        self.assertNotIn("Acceptora-hosted ZIP", security)
+        self.assertIn("Application-hosted mirrors", security)
         self.assertIn("deterministic ZIP bundle and embedded provenance", contributing)
         self.assertIn("extracted ZIP passes installer plan/apply tests", pull_request_template)
-        self.assertIn("Downloadable ZIP bundle", bug_report_template)
+        self.assertIn("Release bundle builder or generated artifact", bug_report_template)
         self.assertIn("Build deterministic public bundles", bundle_builder)
         self.assertIn("acceptora-agent-skill-provenance.json", bundle_builder)
 

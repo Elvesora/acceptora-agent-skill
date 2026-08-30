@@ -2,7 +2,7 @@
 
 You will end this tutorial with the Acceptora Agent Skill installed in a trusted Git worktree, the MCP server discovered by your coding agent, and the completion path ready. Total time: about ten minutes.
 
-[SETUP.md](SETUP.md) remains the security specification. This page is the human path; coding agents follow SETUP.md.
+[SETUP.md](SETUP.md) remains the shared security specification. This page is the human path; coding agents enter through their client-specific `SETUP-*.md` file.
 
 ## What you'll have
 
@@ -34,7 +34,7 @@ $acceptora doctor     # diagnose without changing files
 If you only remember one sequence, make it this:
 
 1. Export `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` in your coding agent, replacing `PROJ_<ULID>` with the uppercase project ID.
-2. Paste the project-specific onboarding prompt into that agent from the repository you want to connect. Keep the prompt's explicit `client` value.
+2. Paste that client's one-line onboarding prompt into the repository you want to connect. Its setup-file URL selects the client.
 3. Approve the exact installation-plan SHA-256 when the agent stops.
 4. Start a real task in Codex, Claude Code, or Gemini CLI. Its prompt hook fetches fresh project-owner verification guidance and requires the trusted isolated reader before repository analysis. When the work finishes, the completion hook runs `$acceptora` even if you do not type it.
 
@@ -52,7 +52,7 @@ Export it only in the coding-agent environment:
 ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>
 ```
 
-For example, project `proj_01ARZ3NDEKTSV4RRFFQ69G5FAV` uses `ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV`. The installation plan prints the exact name and never reads its value. The same Acceptora project uses the same name in every local repository and supported client; different projects use different names. Install once per target Git worktree: each client/worktree pair binds to one Acceptora project, while target-specific MCP aliases and hooks allow several repositories and projects to coexist in shared user configuration. The onboarding prompt never contains the secret. If the variable is missing, stop and set it outside the conversation. Do not paste the value into chat.
+For example, project `proj_01ARZ3NDEKTSV4RRFFQ69G5FAV` uses `ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV`. The agent derives the public project ID from this variable name and never reads its value; the installation plan prints only the name. If several project variables are visible during a new installation, identify the correct variable name when asked, never its value. The same Acceptora project uses the same name in every local repository and supported client; different projects use different names. Install once per target Git worktree: each client/worktree pair binds to one Acceptora project, while target-specific MCP aliases and hooks allow several repositories and projects to coexist in shared user configuration. The onboarding prompt never contains the secret. If the variable is missing, stop and set it outside the conversation. Do not paste the value into chat.
 
 ## Step 2. Install
 
@@ -60,19 +60,19 @@ From the signed-in Acceptora onboarding page, copy the prompt for Codex, Claude 
 
 The agent will:
 
-1. Fresh-clone `https://github.com/Elvesora/acceptora-agent-skill` at `main` into a temporary directory **outside the target worktree**, or use the intact ZIP from that onboarding page extracted the same way.
-2. Read [SETUP.md](SETUP.md) and create a non-mutating installation plan.
+1. Fresh-clone `https://github.com/Elvesora/acceptora-agent-skill` at `main` into a temporary directory **outside the target worktree**.
+2. Reread the selected client setup file and [SETUP.md](SETUP.md), then create a non-mutating installation plan.
 3. Stop for your explicit approval of the exact plan SHA-256.
 4. Apply only that plan, check client discovery, then run the pinned health check with `--confirm-connection`.
 
-Keep `acceptora-agent-skill-provenance.json` beside the extracted `acceptora` directory if you use the ZIP. Do not extract the archive into the target project root, and do not run the installer from inside the target repository.
+Do not substitute a mirror, tag archive, automatically generated GitHub source archive, or already-installed copy. Do not run the installer from inside the target repository.
 
 You approve the digest, client trust, hooks, and MCP tool permissions. The agent must not approve those on your behalf.
 
 To run the installer yourself from a fresh source checkout outside the target worktree:
 
 ```text
-"<absolute-python>" -B -I "<source-directory>/scripts/install.py" plan --client "<codex|claude-code|gemini-cli>" --target-root "<absolute-git-worktree-root>" --project-id "<proj_ULID>" --api-base-url "<canonical-https-origin>" --format text --output "<external-path>/acceptora-install-plan.json"
+"<absolute-python>" -B -I "<source-directory>/scripts/install.py" plan --client "<codex|claude-code|gemini-cli>" --target-root "<absolute-git-worktree-root>" --project-id "<project-id-derived-from-credential-variable-name>" --api-base-url "https://www.acceptora.com" --format text --output "<external-path>/acceptora-install-plan.json"
 ```
 
 Pass one of the three supported `--client` values explicitly. `--format text` prints the human plan, including the Plan SHA-256 and the exact `apply` command. `--output` still writes the JSON file that `apply` requires. The installer does not change files until you pass that exact digest to `apply`. Do not use `npx` or npm as an install source, and do not create or apply an `antigravity-cli` plan.

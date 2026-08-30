@@ -37,7 +37,7 @@ body:
         - Source manifest
         - Offline recovery
         - Git source or update check
-        - Downloadable ZIP bundle
+        - Release bundle builder or generated artifact
         - Other
     validations:
       required: true

@@ -5,9 +5,8 @@
 | Source | Security updates |
 | --- | --- |
 | Canonical `main` branch | Supported |
-| Acceptora-hosted ZIP derived from a clean `main` commit | Supported |
 
-Security fixes are published to the canonical repository's production `main` branch. Install from a fresh clone of that branch or the intact application-hosted ZIP whose embedded provenance names the same branch and exact commit. Update checks always compare with canonical `main`; semantic versions describe compatibility but do not select the production source. Keep the selected agent client, Python, Git, and operating system current.
+Security fixes are published to the canonical repository's production `main` branch. Install from a fresh clone of that branch. Application-hosted mirrors and automatically generated source archives are not supported acquisition paths. Update checks always compare with canonical `main`; semantic versions describe compatibility but do not select the production source. Keep the selected agent client, Python, Git, and operating system current.
 
 ## Reporting a vulnerability
 
@@ -29,7 +28,7 @@ Revoke any credential that may have been exposed during investigation.
 
 The package applies the following controls:
 
-- the production source is the canonical repository's `main` branch; each Git or verified-ZIP installation records its exact commit and deterministic file digests;
+- the production source is the canonical repository's `main` branch; each supported installation records its exact commit and deterministic file digests;
 - installation is non-mutating until the user accepts the exact reconstructed plan digest;
 - apply and rollback recheck source, input, destination, ownership, and digest preconditions;
 - trusted lifecycle commands run from an installer-owned external runtime rather than repository-controlled copies;

@@ -12,26 +12,25 @@ Do not use this file for ordinary finished implementation work. That is the comp
 
 ## Inputs
 
-When an Acceptora onboarding prompt supplies `client`, `target`, `project_id`, and `acceptora_origin`, use those values exactly; do not ask the user to repeat them.
+For onboarding, use the client fixed by `SETUP-CODEX.md`, `SETUP-CLAUDE-CODE.md`, or `SETUP-GEMINI-CLI.md`, and treat the Git worktree where the prompt was submitted as the target. Use the fixed origin `https://www.acceptora.com`.
+
+Identify the project from the name of its exported `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable without reading or printing the value. Derive `proj_<ULID>` from that name. If no matching name exists, stop. If several exist and a validated receipt does not already bind this worktree, ask the user to identify the correct variable name, never its value; do not guess.
 
 When a task-start update notice routes here, its printed cache path is `<runtime-root>/state/skill-update.json`. Use `<runtime-root>/package/scripts/install.py` as the existing trusted installer and `<runtime-root>/install-receipt.json` as the installed identity record. Read `client`, `target_root`, `project_id`, `api_base_url` (the `acceptora_origin`), and `runtime_base` from the receipt's `inputs`, then validate that receipt with the trusted installer's **Status and rollback** command in [SETUP.md](../SETUP.md) before using those values. Stop if the paths or validation do not match.
 
-Resolve an onboarding `target: current Git worktree` to its absolute Git worktree root; for an update notice, use the validated receipt's `target_root`.
+Resolve the Git worktree where an onboarding prompt was submitted to its absolute root; for an update notice, use the validated receipt's `target_root`.
 
 ## Source
 
-This installed skill copy is not the installer source. Obtain either:
+This installed skill copy is not the installer source. Obtain a fresh clone of `https://github.com/Elvesora/acceptora-agent-skill` at `main`, outside the target worktree.
 
-- a fresh clone of `https://github.com/Elvesora/acceptora-agent-skill` at `main`, outside the target worktree; or
-- the intact canonical ZIP extracted outside the target worktree, with `acceptora-agent-skill-provenance.json` kept beside the extracted `acceptora` directory.
-
-Never install from another remote, tag, mirror, or already-installed copy. Never extract the ZIP into the target project root. Never run the installer from inside the target repository.
+Never install from another remote, tag, mirror, archive, or already-installed copy. Never run the installer from inside the target repository.
 
 Read [SETUP.md](../SETUP.md) from that checkout. Follow **Obtain the production source**, then **Agent client prerequisites**.
 
 ## Credential
 
-Derive the credential variable as `ACCEPTORA_AGENT_TOKEN_` plus the uppercase public project ID. Confirm that exact project-derived variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation. Never request the token value.
+Confirm the selected project-derived variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation. Never request the token value.
 
 ## New installation
 

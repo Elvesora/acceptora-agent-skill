@@ -1240,12 +1240,24 @@ class InstallerTest(unittest.TestCase):
             "README.md",
             "SECURITY.md",
             "SETUP.md",
+            "SETUP-CODEX.md",
+            "SETUP-CLAUDE-CODE.md",
+            "SETUP-GEMINI-CLI.md",
             "GETTING-STARTED.md",
             "SUPPORT.md",
         }:
             self.assertNotIn(source, package_sources)
             self.assertNotIn(source, skill_sources)
-        self.assertTrue({"CHANGELOG.md", "SETUP.md", "GETTING-STARTED.md"}.issubset(release_identity_sources))
+        self.assertTrue(
+            {
+                "CHANGELOG.md",
+                "SETUP.md",
+                "SETUP-CODEX.md",
+                "SETUP-CLAUDE-CODE.md",
+                "SETUP-GEMINI-CLI.md",
+                "GETTING-STARTED.md",
+            }.issubset(release_identity_sources)
+        )
         self.assertFalse(
             any(
                 source.split("/", 1)[0] in {".git", ".github", ".verification", "tests"}

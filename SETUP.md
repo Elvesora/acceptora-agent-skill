@@ -1,22 +1,24 @@
 # Acceptora agent setup
 
-Human tutorial: [GETTING-STARTED.md](GETTING-STARTED.md). Coding agents follow this file.
+Human tutorial: [GETTING-STARTED.md](GETTING-STARTED.md). Onboarding routes coding agents through `SETUP-CODEX.md`, `SETUP-CLAUDE-CODE.md`, or `SETUP-GEMINI-CLI.md`; this file owns the shared lifecycle.
 
 This skill supports Codex, Claude Code, and Gemini CLI through MCP or the contract-equivalent REST API in `references/rest-api-contract.md`. These clients connect directly to Streamable HTTP MCP. The Antigravity CLI profile is retained only so an existing installation can be inspected and rolled back; it is not supported for new installation, reconnection, upgrade, or project work. The skill can verify repositories in any programming language, framework, or mixed stack. Python and Git run the installed skill and source adapter; they are not target-application dependencies. Direct REST integrations can use any standards-compliant HTTP client and do not require an Acceptora SDK.
 
 Use the dated [client capability matrix](references/client-capabilities.md) for reviewed provider support, generated configuration paths, lifecycle events, and post-install discovery checks. Its machine-readable source is `config/client-profiles.json`.
 
-The canonical source and update authority is the production `main` branch of `https://github.com/Elvesora/acceptora-agent-skill`. Install from either a fresh checkout of that branch or the intact ZIP served by `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip`. The ZIP is generated from one clean `main` commit and is not an independently authored release source. Do not substitute another remote or mirror.
+The canonical source and update authority is the production `main` branch of `https://github.com/Elvesora/acceptora-agent-skill`. A fresh checkout of that branch is the only supported acquisition path. Do not substitute another remote, mirror, tag archive, or already-installed copy.
 
 ## Coding-agent install or update
 
-Read this file completely before changing the target. For the normal onboarding-prompt path, treat the requested fresh checkout as the authority for the mechanical setup.
+Read this file completely before changing the target. For the normal onboarding-prompt path, fresh-clone the canonical `main` branch outside the target, then reread the selected client setup file and `SETUP.md` from that checkout before making any change. Treat that fresh checkout as the authority for the mechanical setup.
 
-- When an Acceptora onboarding prompt supplies `client`, `target`, `project_id`, and `acceptora_origin`, use those inputs exactly; do not ask the user to repeat them. Always pass that explicit client to the installer.
+- For onboarding, the selected setup filename fixes the explicit installer client: `SETUP-CODEX.md` means `codex`, `SETUP-CLAUDE-CODE.md` means `claude-code`, and `SETUP-GEMINI-CLI.md` means `gemini-cli`. Treat the Git worktree where the prompt was submitted as the target.
+- For onboarding, use `https://www.acceptora.com` as the canonical Acceptora origin. It is fixed package configuration, not a prompt input.
+- For onboarding, identify the project from the name of its exported `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable and derive `proj_<ULID>` without reading or printing the credential value. If no matching variable exists, stop and explain the required variable-name convention. If more than one exists and the current worktree is not already bound by a validated receipt, stop and ask the user to identify only the correct variable name, never its value. Do not guess.
 - When a Codex, Claude Code, or Gemini CLI `SessionStart` update notice routes here, its printed cache path is `<runtime-root>/state/skill-update.json`. Use `<runtime-root>/package/scripts/install.py` as the existing trusted installer and `<runtime-root>/install-receipt.json` as the installed identity record. Read `client`, `target_root`, `project_id`, `api_base_url` (the `acceptora_origin`), and `runtime_base` from the receipt's `inputs`, then validate that receipt with the trusted installer's **Status and rollback** command before using those values. Stop if the paths or validation do not match.
 - If an onboarding prompt, existing receipt, or requested update identifies `antigravity-cli`, do not create or apply an install plan and do not reconnect or upgrade it. For an existing receipt, use its trusted installer only for `status`, `rollback-plan`, and an explicitly approved `rollback`, then install a supported client separately.
-- Resolve an onboarding `target: current Git worktree` to its absolute Git worktree root; for an update notice, use the validated receipt's `target_root`. Validate the fresh checkout against **Obtain the production source**, then satisfy **Agent client prerequisites**.
-- Derive the credential variable as `ACCEPTORA_AGENT_TOKEN_` plus the uppercase public project ID, for example `ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV`. Confirm that exact variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation.
+- Resolve the Git worktree where an onboarding prompt was submitted to its absolute root; for an update notice, use the validated receipt's `target_root`. Validate the fresh checkout against **Obtain the production source**, then satisfy **Agent client prerequisites**.
+- Confirm the selected project-derived credential variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation.
 - For a new installation, follow **Plan**, show the full source commit with the plan review, and pause for explicit approval of the exact `plan_sha256`. Then follow **Apply**, **Client review**, **Status and rollback** (status only), and finally **Health check and connection confirmation**.
 - For an update, first use the installed trusted installer to inspect status and create a rollback plan. Pause for explicit approval of the exact `rollback_plan_sha256`, apply that rollback, and only then create a new installation plan from this fresh checkout. Never reuse a plan created before rollback. Continue with the new-install sequence above.
 - Perform the mechanical commands yourself, but never approve a plan digest, client trust, hooks, or MCP tool permissions on the user's behalf. Stop at every approval or missing prerequisite required by this guide.
@@ -34,12 +36,12 @@ Install separately in every target Git worktree. The installed skill and instruc
 
 These are installer and coding-agent runtime prerequisites only. Do not install Python, Git, PHP, Laravel, Composer, or an Acceptora SDK into the target application merely to use the verification workflow.
 
-- A fresh clone of the canonical production `main` branch or an intact extracted canonical ZIP outside the target repository.
+- A fresh clone of the canonical production `main` branch outside the target repository.
 - The actual Git worktree root; subdirectory installs are rejected.
 - A strict Git worktree with no submodules/gitlinks, unresolved index stages, `assume-unchanged` or `skip-worktree` entries, non-UTF-8 or non-portable paths, or special filesystem objects in the eligible source. The installer rejects unsupported state before mutation.
 - Absolute Python 3.11+ and Git executables outside that worktree, with trusted owners and no untrusted write or replacement access along their path. Planning probes the selected Python in isolated mode and requires its reported executable identity to match.
 - Codex CLI 0.144.0 or newer, or a current supported Claude Code or Gemini CLI release.
-- The project ID and canonical HTTPS origin shown in Acceptora **Settings > Connection**.
+- One unambiguous project-derived credential variable for this worktree, or a validated existing receipt that identifies it.
 - A project credential with the seven normal scopes: `projects:read`, `features:resolve`, `features:read`, `checklists:write`, `feedback:read`, `feedback:address`, and `gates:read`.
 - Optional `exceptions:write` only when exact-source policy exceptions are required.
 
@@ -69,19 +71,14 @@ git -C "<external-temporary-directory>/acceptora-agent-skill" rev-parse HEAD
 
 The checkout's `origin` must resolve to the canonical repository. `main` is the production channel; semantic package versions describe compatibility but do not select updates.
 
-For the downloadable alternative, get both public artifacts from the canonical Acceptora origin:
-
-- `https://www.acceptora.com/agent-skill/acceptora-agent-skill.zip`
-- `https://www.acceptora.com/agent-skill/release-manifest.json`
-
-The response header `X-Acceptora-Artifact-SHA256` and external manifest bind the served bytes. Extract the entire ZIP outside the target repository. Keep the top-level `acceptora-agent-skill-provenance.json` beside the `acceptora` directory; do not move only the package directory. The installer refuses a missing, malformed, wrong-repository, wrong-branch, wrong-commit, or wrong-tree provenance record. Use the extracted `acceptora` directory as `<source-directory>` below. The external manifest binds the ZIP digest and size; the embedded record lets the extracted installer revalidate the canonical source commit and complete package identity before plan or apply.
+Do not use GitHub's automatically generated source archives or an application-hosted mirror. They are not installer-compatible acquisition paths. Use the clean canonical checkout as `<source-directory>` below.
 
 ## Plan
 
 Write the plan outside the target worktree. Commands below use one-line PowerShell syntax: replace every angle-bracket placeholder, preserve the quotes around paths, and keep the leading `&`. On POSIX shells, remove only the leading `&`.
 
 ```text
-& "<absolute-python>" -B -I "<source-directory>/scripts/install.py" plan --client "<codex|claude-code|gemini-cli>" --target-root "<absolute-git-worktree-root>" --project-id "<proj_ULID>" --api-base-url "<canonical-https-origin>" --python-executable "<absolute-python>" --git-executable "<absolute-git>" --format json --output "<external-path>/acceptora-install-plan.json"
+& "<absolute-python>" -B -I "<source-directory>/scripts/install.py" plan --client "<codex|claude-code|gemini-cli>" --target-root "<absolute-git-worktree-root>" --project-id "<project-id-derived-from-credential-variable-name>" --api-base-url "https://www.acceptora.com" --python-executable "<absolute-python>" --git-executable "<absolute-git>" --format json --output "<external-path>/acceptora-install-plan.json"
 ```
 
 Pass `--client` explicitly in every reviewed installation and select only Codex, Claude Code, or Gemini CLI. The installer can still detect one of those clients from an unambiguous process or workspace signal, but auto-detection is not the public setup procedure. `--format text` prints a human review of the same plan; `--output` always stores the JSON document that `apply` requires. The installer never applies a plan until `apply` receives that exact `plan_sha256`.
