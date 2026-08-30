@@ -212,7 +212,6 @@ def openapi_document(state: "HealthState") -> dict[str, Any]:
             "title": "Acceptora Agent Verification API",
             "version": state.versions["contract_version"],
             "x-acceptora-integration-version": state.versions["integration_version"],
-            "x-acceptora-skill-version": state.versions["skill_version"],
         },
         "servers": [{"url": "/"}],
         "paths": paths,
@@ -573,6 +572,10 @@ class HealthCheckTest(unittest.TestCase):
         version_state.versions["contract_version"] = "1.1.0"
         cases.append(("version", version_state, "VERSION_DRIFT"))
 
+        integration_version_state = HealthState()
+        integration_version_state.versions["integration_version"] = "1.1.0"
+        cases.append(("integration-version", integration_version_state, "VERSION_DRIFT"))
+
         tool_state = HealthState()
         tool_state.tools = tool_state.tools[:-1]
         cases.append(("tool", tool_state, "MCP_TOOL_DRIFT"))
@@ -616,6 +619,25 @@ class HealthCheckTest(unittest.TestCase):
                 self.assertFalse(
                     any(request["path"] == CONNECTION_CONFIRMATION_PATH for request in state.requests)
                 )
+
+    def test_health_accepts_absent_or_different_server_skill_version(self) -> None:
+        cases: list[tuple[str, HealthState]] = []
+
+        absent_state = HealthState()
+        absent_state.versions.pop("skill_version")
+        absent_state.project["versions"].pop("skill_version")
+        cases.append(("absent", absent_state))
+
+        different_state = HealthState()
+        different_state.versions["skill_version"] = "9.9.9"
+        different_state.project["versions"]["skill_version"] = "8.8.8"
+        cases.append(("different", different_state))
+
+        for label, state in cases:
+            with self.subTest(label=label):
+                result = run_health(state)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertTrue(json.loads(result.stdout)["ok"])
 
     def test_health_rejects_instruction_digest_drift_without_printing_bodies(self) -> None:
         state = HealthState()

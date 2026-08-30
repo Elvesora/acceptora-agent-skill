@@ -55,7 +55,7 @@ The secure installation sequence is:
 3. Review and explicitly accept the exact plan SHA-256 before apply.
 4. Confirm the receipt records the canonical repository, branch, and commit.
 5. Confirm client skill, MCP, and hook discovery, then verify installer status.
-6. As the final setup step, run the pinned external health check with `--confirm-connection`; it marks the project connected only after every contract check passes.
+6. As the final setup step, run the pinned external health check with `--confirm-connection`; it validates the server contract and integration versions independently of the package release, then marks the project connected only after every contract check passes.
 
 ## Supported integrations
 

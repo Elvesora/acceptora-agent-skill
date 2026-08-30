@@ -87,9 +87,16 @@ class PackageStructureTest(unittest.TestCase):
         self.assertIn("standalone agent skill", readme)
         self.assertIn("It is not a Codex plugin.", readme)
 
-    def test_public_documentation_contains_no_unreleased_placeholder(self) -> None:
+    def test_only_changelog_contains_one_top_unreleased_section(self) -> None:
         for document in PACKAGE_ROOT.rglob("*.md"):
             body = document.read_text(encoding="utf-8")
+
+            if document == PACKAGE_ROOT / "CHANGELOG.md":
+                headings = re.findall(r"^## .+$", body, re.MULTILINE)
+                self.assertEqual("## [Unreleased]", headings[0], document)
+                self.assertEqual(1, headings.count("## [Unreleased]"), document)
+                continue
+
             self.assertNotIn("[Unreleased]", body, document)
 
     def test_openai_interface_metadata_matches_the_skill_identity(self) -> None:
@@ -516,7 +523,6 @@ class PackageStructureTest(unittest.TestCase):
         self.assertEqual("1.0.0", manifest["integration"]["version"])
         self.assertEqual("1.0.0", manifest["contract"]["version"])
         self.assertEqual("1.0.0", manifest["server"]["version"])
-        self.assertNotIn("## [Unreleased]", changelog)
         self.assertIn("## [1.2.3] - 2026-08-29", changelog)
         self.assertIn("git clone --depth 1 --branch main --single-branch", setup)
         self.assertIn("https://github.com/Elvesora/acceptora-agent-skill", setup)

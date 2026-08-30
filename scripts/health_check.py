@@ -435,7 +435,6 @@ def _validate_openapi(
         not isinstance(info, dict)
         or info.get("version") != expected_versions["contract_version"]
         or info.get("x-acceptora-integration-version") != expected_versions["integration_version"]
-        or info.get("x-acceptora-skill-version") != expected_versions["skill_version"]
     ):
         raise HealthFailure("REST_VERSION_DRIFT", "The REST contract versions do not match this package.")
     if document.get("servers") != [{"url": "/"}]:
@@ -560,12 +559,16 @@ def run_health(
         "integration_version": manifest["integration"]["version"],
         "skill_version": manifest["skill"]["version"],
     }
-    if any(actual_versions.get(key) != value for key, value in expected_versions.items()):
-        raise HealthFailure("VERSION_DRIFT", "The API contract, integration, or skill version does not match this package.")
-    checks.append({"name": "api_versions", "status": "pass", "detail": "All three package/server versions match."})
+    supported_versions = {
+        key: expected_versions[key]
+        for key in ("contract_version", "integration_version")
+    }
+    if any(actual_versions.get(key) != value for key, value in supported_versions.items()):
+        raise HealthFailure("VERSION_DRIFT", "The API contract or integration version does not match this package.")
+    checks.append({"name": "api_versions", "status": "pass", "detail": "Server contract and integration versions match."})
 
     openapi_response, _ = transport.request(settings.openapi_url, method="GET")
-    _validate_openapi(openapi_response, manifest, expected_versions)
+    _validate_openapi(openapi_response, manifest, supported_versions)
     checks.append({"name": "rest_openapi", "status": "pass", "detail": "OpenAPI 3.1 versions, relative server, operations, scopes, and schemas match."})
 
     project_response, _ = transport.request(
@@ -577,8 +580,12 @@ def run_health(
         raise HealthFailure("PROJECT_RESPONSE_INVALID", "The authenticated project endpoint returned an invalid response.")
     if project_response.get("project_id") != settings.project_id:
         raise HealthFailure("PROJECT_ID_MISMATCH", "The bearer token is not scoped to the pinned Acceptora project.")
-    if project_response.get("versions") != expected_versions:
-        raise HealthFailure("PROJECT_VERSION_DRIFT", "The authenticated project metadata versions do not match this package.")
+    project_versions = project_response.get("versions")
+    if (
+        not isinstance(project_versions, dict)
+        or any(project_versions.get(key) != value for key, value in supported_versions.items())
+    ):
+        raise HealthFailure("PROJECT_VERSION_DRIFT", "The authenticated project contract or integration version does not match this package.")
     try:
         instruction_context = validate_effective_instructions(project_response.get("verification_instructions"))
     except InstructionSnapshotError:

@@ -264,9 +264,13 @@ class ReleaseBuilderTest(unittest.TestCase):
                 for path in paths:
                     if path.endswith(".md"):
                         body = archive.read(f"acceptora/{path}").decode("utf-8")
-                        self.assertNotIn("[Unreleased]", body, path)
                         if path == "CHANGELOG.md":
+                            headings = [line for line in body.splitlines() if line.startswith("## ")]
+                            self.assertEqual("## [Unreleased]", headings[0], path)
+                            self.assertEqual(1, headings.count("## [Unreleased]"), path)
                             self.assertIn("## [1.2.3] - 2026-08-29", body, path)
+                        else:
+                            self.assertNotIn("[Unreleased]", body, path)
 
             artifacts = {entry["filename"]: entry for entry in manifest["artifacts"]}
             for name, entry in artifacts.items():

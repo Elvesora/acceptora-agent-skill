@@ -12,7 +12,7 @@ Use REST when the agent environment cannot connect to MCP or when any applicatio
 - Send `Accept: application/json` and `Content-Type: application/json` for POST operations.
 - Preserve `X-Correlation-ID` in diagnostics. Honor `Retry-After` on `429` responses.
 
-Before project work, the installed task-start hook calls project metadata, validates the exact configured project ID and full canonical `verification_instructions` envelope, then atomically stores it outside the repository for the trusted reader. Before any write, require the exact configured project ID, active project/workspace lifecycle, compatible versions, and the operation's granted scope. Do not follow redirects with an authorization header or reuse a stale instruction snapshot.
+Before project work, the installed task-start hook calls project metadata, validates the exact configured project ID and full canonical `verification_instructions` envelope, then atomically stores it outside the repository for the trusted reader. Before any write, require the exact configured project ID, active project/workspace lifecycle, compatible contract and integration versions, and the operation's granted scope. Treat `skill_version` as client-reported diagnostic metadata, not a server compatibility gate. Do not follow redirects with an authorization header or reuse a stale instruction snapshot.
 
 ## Operation map
 
@@ -62,7 +62,7 @@ When `checklist_definitions` is requested, consume the returned `checklist_secti
 
 ## Setup-only connection confirmation
 
-Installation and update flows must make `confirm_connection` their final agent step. First validate public versions and OpenAPI, authenticate the exact configured project, verify lifecycle, endpoints, versions, required scopes, MCP identity, all eight tool names, annotations, and input/output schema digests, and verify the installed client and installer status. Only after every check passes, send:
+Installation and update flows must make `confirm_connection` their final agent step. First validate public contract and integration versions and OpenAPI, authenticate the exact configured project, verify lifecycle, endpoints, required scopes, MCP identity, all eight tool names, annotations, and input/output schema digests, and verify the installed client and installer status. Only after every check passes, send:
 
 ```http
 POST /api/v1/integrations/connection/confirm HTTP/1.1
@@ -84,7 +84,7 @@ For every sequence below, use the deterministic manifest's exact `repository` va
 
 For a normal eligible change:
 
-1. `GET /project` and require the intended project ID, active lifecycle, compatible versions/endpoints, and every scope needed by the planned sequence.
+1. `GET /project` and require the intended project ID, active lifecycle, compatible contract and integration versions/endpoints, and every scope needed by the planned sequence.
 2. Call `resolve_feature` with an explicit feature ID or exact source aliases. Do not guess after an ambiguous result.
 3. Call `get_feature_context` with all seven include projections before proposing a revision, and use its returned `checklist_sections` and complete active/retired item `definition` objects as the lossless reconciliation base.
 4. Inspect the final changed artifact and build the deterministic source descriptor, changed-surface manifest, checklist definitions, evidence, limits, and idempotency key required by the OpenAPI request schema.
@@ -128,7 +128,7 @@ Content-Type: application/json
   "versions": {
     "integration_name": "your-integration",
     "integration_version": "1.0.0",
-      "skill_version": "1.2.3",
+    "skill_version": "1.2.3",
     "contract_version": "1.0.0"
   }
 }
