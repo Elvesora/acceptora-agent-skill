@@ -336,7 +336,7 @@ class ProjectContextTest(unittest.TestCase):
     def test_store_windows_validates_before_persisting_only_the_derived_name(self) -> None:
         opener = Opener(project_payload())
         with (
-            patch.object(PROJECT_CONTEXT.os, "name", "nt"),
+            patch.object(PROJECT_CONTEXT, "_require_windows"),
             patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
             patch.object(PROJECT_CONTEXT, "_store_current_user_environment", return_value=True) as store,
         ):
