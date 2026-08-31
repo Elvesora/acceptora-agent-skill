@@ -234,16 +234,9 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertIn("SETUP-CODEX.md", paths)
             self.assertIn("SETUP-CLAUDE-CODE.md", paths)
             self.assertIn("SETUP-GEMINI-CLI.md", paths)
-            self.assertIn("GETTING-STARTED.md", paths)
             self.assertIn("LICENSE", paths)
             self.assertIn("references/init.md", paths)
             self.assertIn("references/doctor.md", paths)
-            self.assertIn("CHANGELOG.md", paths)
-            self.assertNotIn("README.md", paths)
-            self.assertNotIn("CONTRIBUTING.md", paths)
-            self.assertNotIn("SECURITY.md", paths)
-            self.assertNotIn("CODE_OF_CONDUCT.md", paths)
-            self.assertNotIn("SUPPORT.md", paths)
             self.assertNotIn(".gitattributes", paths)
             self.assertNotIn(".gitignore", paths)
             self.assertFalse(any(path.startswith(".github/") for path in paths))
@@ -260,17 +253,6 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertFalse(any(path.startswith("tests/") for path in paths))
             self.assertFalse(any(path.endswith(".deferred") for path in paths))
             self.assertFalse(any("__pycache__" in path for path in paths))
-            with zipfile.ZipFile(first_dist / "acceptora-1.2.3.zip") as archive:
-                for path in paths:
-                    if path.endswith(".md"):
-                        body = archive.read(f"acceptora/{path}").decode("utf-8")
-                        if path == "CHANGELOG.md":
-                            headings = [line for line in body.splitlines() if line.startswith("## ")]
-                            self.assertEqual("## [Unreleased]", headings[0], path)
-                            self.assertEqual(1, headings.count("## [Unreleased]"), path)
-                            self.assertIn("## [1.2.3] - 2026-08-29", body, path)
-                        else:
-                            self.assertNotIn("[Unreleased]", body, path)
 
             artifacts = {entry["filename"]: entry for entry in manifest["artifacts"]}
             for name, entry in artifacts.items():

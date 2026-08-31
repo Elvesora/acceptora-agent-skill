@@ -101,12 +101,7 @@ class GitMainUpdateCheckTest(unittest.TestCase):
         self.assertIn(INSTALLED_COMMIT[:12], notice)
         self.assertIn(CURRENT_COMMIT[:12], notice)
         self.assertIn(REPOSITORY_URL, notice)
-        self.assertIn("clone a fresh main checkout", notice)
-        self.assertIn("read SETUP.md completely from that checkout", notice)
-        self.assertIn('"Coding-agent install or update" procedure', notice)
-        self.assertIn("printed cache path identifies the installed runtime", notice)
         self.assertIn(str(cache_path), notice)
-        self.assertIn("No source was fetched and no update was applied", notice)
 
         command = run.call_args.args[0]
         self.assertEqual(

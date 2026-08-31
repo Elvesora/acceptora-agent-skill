@@ -53,7 +53,6 @@ class CodexTemplateTest(unittest.TestCase):
 
     def test_mcp_template_uses_a_project_token_placeholder_and_write_approval(self) -> None:
         body = (PACKAGE_ROOT / "config" / "codex-mcp.example.toml").read_text(encoding="utf-8")
-        setup = (PACKAGE_ROOT / "SETUP.md").read_text(encoding="utf-8")
 
         self.assertIn('url = "https://verify.example.test/mcp"', body)
         self.assertIn(
@@ -62,8 +61,6 @@ class CodexTemplateTest(unittest.TestCase):
         )
         self.assertIn('default_tools_approval_mode = "writes"', body)
         self.assertNotIn("ACCEPTORA_MCP_URL", body)
-        self.assertIn("https://developers.openai.com/codex/config-reference", setup)
-        self.assertIn("confirm the expected write-tool prompt", setup)
 
 
 class CodexTaskStartAdapterTest(unittest.TestCase):

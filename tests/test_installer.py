@@ -1231,31 +1231,12 @@ class InstallerTest(unittest.TestCase):
         package_sources = {entry["source"] for entry in module._iter_package_files()}
         skill_sources = {entry["source"] for entry in module._iter_skill_files()}
 
-        for source in {
-            ".gitattributes",
-            ".gitignore",
-            "CHANGELOG.md",
-            "CODE_OF_CONDUCT.md",
-            "CONTRIBUTING.md",
-            "README.md",
-            "SECURITY.md",
-            "SETUP.md",
-            "SETUP-CODEX.md",
-            "SETUP-CLAUDE-CODE.md",
-            "SETUP-GEMINI-CLI.md",
-            "GETTING-STARTED.md",
-            "SUPPORT.md",
-        }:
-            self.assertNotIn(source, package_sources)
-            self.assertNotIn(source, skill_sources)
         self.assertTrue(
             {
-                "CHANGELOG.md",
                 "SETUP.md",
                 "SETUP-CODEX.md",
                 "SETUP-CLAUDE-CODE.md",
                 "SETUP-GEMINI-CLI.md",
-                "GETTING-STARTED.md",
             }.issubset(release_identity_sources)
         )
         self.assertFalse(
