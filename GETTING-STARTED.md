@@ -18,7 +18,7 @@ No agent operation can make a human verification decision or grant final accepta
 - Codex CLI 0.144.0 or newer, Claude Code, or Gemini CLI with a Standard/Enterprise license, supported paid API key, or Vertex AI authentication
 - Python 3.11 or newer and Git, installed outside the target repository
 - An Acceptora project and a short-lived project credential
-- The credential exported as `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` in the coding-agent process environment, using the uppercase project ID shown by Acceptora, never in a prompt, URL, plan, or file
+- The credential exported as `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` in the coding-agent process environment, using the uppercase project ID shown by Acceptora. If it is missing, the agent first checks for an existing ignored project environment store without reading it, validates the private-chat key before storage, and stops until a restarted client actually exposes the variable. When no such file exists, Windows recovery uses the current-user environment.
 - A trusted Git worktree you own; do not use this on untrusted forks or pull requests
 
 ## How it works
@@ -52,7 +52,7 @@ Export it only in the coding-agent environment:
 ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>
 ```
 
-For example, project `proj_01ARZ3NDEKTSV4RRFFQ69G5FAV` uses `ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV`. The agent derives the public project ID from this variable name and never reads its value; the installation plan prints only the name. If several project variables are visible during a new installation, identify the correct variable name when asked, never its value. The same Acceptora project uses the same name in every local repository and supported client; different projects use different names. Install once per target Git worktree: each client/worktree pair binds to one Acceptora project, while target-specific MCP aliases and hooks allow several repositories and projects to coexist in shared user configuration. The onboarding prompt never contains the secret. If the variable is missing, stop and set it outside the conversation. Do not paste the value into chat.
+For example, project `proj_01ARZ3NDEKTSV4RRFFQ69G5FAV` uses `ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV`. The installation plan prints only the name. If several project variables are visible during a new installation, identify the correct variable name when asked. The same Acceptora project uses the same name in every local repository and supported client; different projects use different names. Install once per target Git worktree: each client/worktree pair binds to one Acceptora project, while target-specific MCP aliases and hooks allow several repositories and projects to coexist in shared user configuration. The onboarding prompt never contains the secret. If no matching variable exists, the agent first checks for an existing untracked and ignored project environment store without reading it. When one exists, the helper validates the private-chat key without persistence; you then place the derived variable in the selected file and restart the client through the project's existing loader. Installation remains stopped until the new client process sees that exact variable. If no project store exists, Windows recovery validates and stores the key under the derived current-user environment name. Other processes running as the same OS user can read that environment, so use a separate client process with only the selected project's key when stronger isolation is needed.
 
 ## Step 2. Install
 
@@ -109,7 +109,7 @@ Expect a compact result with a real feature URL, or a visible recovery artifact 
 
 ## Common issues
 
-- **The agent says the token is missing.** Export the exact project-derived variable printed by the plan in the coding-agent process environment, then retry. Never put the value in the prompt.
+- **The agent says the token is missing.** It should first detect an existing ignored project environment store without reading it. If one exists, the agent validates your private-chat key without persistence, asks you to place the derived variable there, and stops until a restarted client exposes it through the existing project loader. Otherwise Windows recovery stores the validated key under the derived current-user environment name. The agent never repeats the key.
 - **The skill, MCP server, or hooks do not appear.** Reload the client. Codex: `/skills`, `/mcp` or `codex mcp list`, `/hooks`. Claude Code: `/skills`, `/mcp` or `claude mcp list`, `/hooks`. Gemini CLI: `/skills reload`, `/mcp reload` or `gemini mcp list`, `/hooks panel`. Then run `$acceptora doctor`.
 - **You have an existing Antigravity receipt.** Do not use it for new work, reconnect it, or upgrade it. Use its trusted installer only for `status`, `rollback-plan`, and an explicitly approved `rollback`, then install a supported client separately.
 - **Gemini CLI says the individual client is no longer supported.** Do not migrate that installation to Antigravity. Use Codex, Claude Code, or a supported Gemini authentication environment.

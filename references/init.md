@@ -14,7 +14,7 @@ Do not use this file for ordinary finished implementation work. That is the comp
 
 For onboarding, use the client fixed by `SETUP-CODEX.md`, `SETUP-CLAUDE-CODE.md`, or `SETUP-GEMINI-CLI.md`, and treat the Git worktree where the prompt was submitted as the target. Use the fixed origin `https://www.acceptora.com`.
 
-Identify the project from the name of its exported `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable without reading or printing the value. Derive `proj_<ULID>` from that name. If no matching name exists, stop. If several exist and a validated receipt does not already bind this worktree, ask the user to identify the correct variable name, never its value; do not guess.
+Identify the project from the name of its exported `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable without printing the value. Derive `proj_<ULID>` from that name. If no matching name exists, use **Missing project credential** in [SETUP.md](../SETUP.md): first inspect filenames and Git metadata for an existing ignored project environment store, never its contents. The selected branch validates the private-chat key before either asking the user to place it in that file or storing it in the Windows current-user environment. If several variables or eligible stores exist and a validated receipt does not already bind this worktree, ask the user to identify the correct name or active file; do not guess.
 
 When a task-start update notice routes here, its printed cache path is `<runtime-root>/state/skill-update.json`. Use `<runtime-root>/package/scripts/install.py` as the existing trusted installer and `<runtime-root>/install-receipt.json` as the installed identity record. Read `client`, `target_root`, `project_id`, `api_base_url` (the `acceptora_origin`), and `runtime_base` from the receipt's `inputs`, then validate that receipt with the trusted installer's **Status and rollback** command in [SETUP.md](../SETUP.md) before using those values. Stop if the paths or validation do not match.
 
@@ -30,7 +30,7 @@ Read [SETUP.md](../SETUP.md) from that checkout. Follow **Obtain the production 
 
 ## Credential
 
-Confirm the selected project-derived variable exists in the coding-agent process environment without printing, copying, or storing its value. If it is absent, stop and explain how the user can set it outside the conversation. Never request the token value.
+Confirm the selected project-derived variable exists in the coding-agent process environment without printing its value. If it is absent, follow **Missing project credential** in [SETUP.md](../SETUP.md) and do not plan. Never echo the supplied key. When a safe ignored project environment store exists, use validation-only mode, ask the user to place the exact derived variable there, and stop until a restarted client exposes it through the project's existing loader; never inspect the file. Otherwise use the documented Windows current-user recovery. Confirm only the derived project ID and variable name.
 
 ## New installation
 

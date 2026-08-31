@@ -7,6 +7,8 @@ The Acceptora Agent Skill connects coding agents to Acceptora's durable manual-v
 
 > **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). Export the project's `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable, paste the client's one-line onboarding prompt into the target worktree, and approve the exact installation-plan digest.
 
+If the project variable is missing, the agent first checks filenames and Git metadata for an existing untracked and ignored project environment store without reading it. When one exists, the helper authenticates the private-chat key without persistence, the user places the derived variable in that file, and installation stops until the project's existing loader exposes it to a restarted client. Otherwise Windows recovery validates and stores it under the derived current-user environment name. Other same-user processes can read current-user environment values; use a separate client process with only one project key for stronger isolation.
+
 This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It retains the Antigravity CLI profile only so an existing installation can be inspected and rolled back. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
 
 No agent operation can make a human verification decision or grant final acceptance.
@@ -69,11 +71,11 @@ Google directs individual Google-account users away from Gemini CLI to Antigravi
 
 Install the skill separately in every target Git worktree. The skill and managed instruction block are project-local; the external runtime, hooks, and MCP configuration are user-scoped and merged under a target-specific identity. One client/worktree pair binds to one Acceptora project. Different worktrees and projects can coexist in the same client configuration, and one installation can be rolled back without removing another installation or unrelated user settings.
 
-The credential variable is derived from the Acceptora project ID. Repositories bound to the same Acceptora project reuse the same variable name; different projects use different names. A client process can inherit every project token exported to it, so use a separate process with only the required token when stronger project isolation is needed.
+The credential variable is derived from the Acceptora project ID. Repositories bound to the same Acceptora project reuse the same variable name; different projects use different names. Missing-credential recovery validates the key against the authenticated project endpoint before the user stores it in an existing ignored project environment file or the Windows helper persists it. A client process can inherit every project token exported to it, so use a separate process with only the required token when stronger project isolation is needed.
 
 ## Security boundary
 
-Use a short-lived, least-scope credential from a secure environment variable or secret provider. Never commit credentials or place them in prompts, URLs, plans, logs, fixtures, or repository configuration. The operating system, current user account, trusted administrators, repository code, and client configuration are part of the trust boundary.
+Use a short-lived, least-scope credential from a secure environment variable or secret provider. Never commit credentials or place them in product prompts, URLs, plans, logs, fixtures, or tracked repository configuration. The only prompt exception is the explicit missing-credential recovery exchange described above; the agent must never echo that reply or inspect a selected ignored environment file. The operating system, current user account, trusted administrators, repository code, client configuration, project environment loader, and that private conversation are part of the trust boundary.
 
 The installer never reads the token, grants client trust, or approves tools. Review the complete model in [SETUP.md](SETUP.md#boundary) and report suspected vulnerabilities through [SECURITY.md](SECURITY.md).
 

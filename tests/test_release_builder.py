@@ -242,6 +242,7 @@ class ReleaseBuilderTest(unittest.TestCase):
             self.assertFalse(any(path.startswith(".github/") for path in paths))
             self.assertNotIn("scripts/preview_install.py", paths)
             self.assertIn("scripts/install.py", paths)
+            self.assertIn("scripts/store_project_credential.py", paths)
             self.assertIn("adapters/gemini/after_agent.py", paths)
             self.assertIn("adapters/antigravity/hooks.json.example", paths)
             self.assertIn("adapters/antigravity/antigravity_event.py", paths)

@@ -623,6 +623,152 @@ class InstallerTest(unittest.TestCase):
             ):
                 module._validate_inputs(PROJECT_ID, redirected)
 
+    def test_missing_project_token_stops_for_ignored_env_file_and_exact_environment_resumes_plan(self) -> None:
+        canary = "credential-body-must-not-be-read-or-reported"
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = workspace / "target"
+            target.mkdir()
+            initialize_git_repository(target)
+            (target / ".gitignore").write_text(".env\n", encoding="utf-8")
+            (target / ".env").write_text(canary + "\n", encoding="utf-8")
+            plan_path = workspace / "plan.json"
+            environment = {key: value for key, value in os.environ.items() if key != TOKEN_ENV}
+            arguments = [
+                "plan",
+                "--client",
+                "codex",
+                "--platform",
+                "windows" if os.name == "nt" else "posix",
+                "--target-root",
+                str(target),
+                "--runtime-base",
+                str(runtime_base(workspace)),
+                "--client-config-dir",
+                str(client_config_dir(workspace, "codex")),
+                "--project-id",
+                PROJECT_ID,
+                "--api-base-url",
+                API_BASE_URL,
+                "--output",
+                str(plan_path),
+            ]
+            before = snapshot(target)
+
+            stopped = run_installer(*arguments, environment=environment)
+
+            self.assertEqual(2, stopped.returncode, stopped.stderr)
+            self.assertIn("A Git-ignored project environment file is available", stopped.stderr)
+            self.assertIn(".env", stopped.stderr)
+            self.assertNotIn(str(target), stopped.stderr)
+            self.assertNotIn(canary, stopped.stdout + stopped.stderr)
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(before, snapshot(target))
+            self.assertFalse(runtime_base(workspace).exists())
+            self.assertFalse(client_config_dir(workspace, "codex").exists())
+
+            resumed = run_installer(
+                *arguments,
+                environment={**environment, TOKEN_ENV: VALID_TOKEN},
+            )
+
+            self.assertEqual(0, resumed.returncode, resumed.stderr)
+            self.assertTrue(plan_path.is_file())
+            self.assertEqual(before, snapshot(target))
+            self.assertNotIn(canary, plan_path.read_text(encoding="utf-8"))
+
+    def test_project_environment_storage_rejects_unsafe_files_and_excludes_templates_and_nested_files(self) -> None:
+        module = load_installer_module()
+        git_executable = Path(str(shutil.which("git"))).resolve()
+        environment = {key: value for key, value in os.environ.items() if key != TOKEN_ENV}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, environment, clear=True):
+            target = Path(temporary) / "target"
+            target.mkdir()
+            initialize_git_repository(target)
+            (target / ".env.example").write_text("TEMPLATE=true\n", encoding="utf-8")
+            (target / "sample.env").write_text("TEMPLATE=true\n", encoding="utf-8")
+            nested = target / "nested"
+            nested.mkdir()
+            (nested / ".env").write_text("NESTED=true\n", encoding="utf-8")
+
+            module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+            unsafe = target / ".env"
+            unsafe.write_text("UNSAFE=true\n", encoding="utf-8")
+            with self.assertRaisesRegex(module.InstallError, "not both Git-untracked and ignored"):
+                module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+            (target / ".gitignore").write_text(".env\n", encoding="utf-8")
+            tracked = subprocess.run(
+                [str(git_executable), "-C", str(target), "add", "-f", ".env"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, tracked.returncode, tracked.stderr)
+            with self.assertRaisesRegex(module.InstallError, "not both Git-untracked and ignored"):
+                module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+            unsafe.unlink()
+            linklike = target / ".envrc"
+            linklike.write_text("export VALUE=true\n", encoding="utf-8")
+            original_is_linklike = module._is_linklike
+            with mock.patch.object(
+                module,
+                "_is_linklike",
+                side_effect=lambda path: path == linklike or original_is_linklike(path),
+            ), self.assertRaisesRegex(module.InstallError, "regular non-link file: .envrc"):
+                module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+    def test_multiple_ignored_project_environment_files_require_explicit_choice(self) -> None:
+        module = load_installer_module()
+        git_executable = Path(str(shutil.which("git"))).resolve()
+        environment = {key: value for key, value in os.environ.items() if key != TOKEN_ENV}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, environment, clear=True):
+            target = Path(temporary) / "target"
+            target.mkdir()
+            initialize_git_repository(target)
+            (target / ".gitignore").write_text(".env*\n", encoding="utf-8")
+            (target / ".env").write_text("FIRST=true\n", encoding="utf-8")
+            (target / ".env.local").write_text("SECOND=true\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(module.InstallError, "explicit user choice") as raised:
+                module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+            self.assertIn(".env, .env.local", str(raised.exception))
+            with mock.patch.dict(os.environ, {TOKEN_ENV: VALID_TOKEN}, clear=False):
+                module._assert_project_environment_storage(target, git_executable, TOKEN_ENV)
+
+    def test_apply_rechecks_project_environment_storage_before_any_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = workspace / "target"
+            target.mkdir()
+            initialize_git_repository(target)
+            (target / ".gitignore").write_text(".env\n", encoding="utf-8")
+            environment = {key: value for key, value in os.environ.items() if key != TOKEN_ENV}
+            plan_path = workspace / "plan.json"
+            plan = write_plan(
+                workspace,
+                target,
+                plan_path,
+                "codex",
+                "windows" if os.name == "nt" else "posix",
+                environment=environment,
+            )
+            (target / ".env").write_text("LATE=true\n", encoding="utf-8")
+            before = snapshot(target)
+
+            applied = apply_plan(plan_path, plan, environment=environment)
+
+            self.assertEqual(2, applied.returncode, applied.stderr)
+            self.assertIn("A Git-ignored project environment file is available", applied.stderr)
+            self.assertIn(".env", applied.stderr)
+            self.assertEqual(before, snapshot(target))
+            self.assertFalse(runtime_base(workspace).exists())
+            self.assertFalse(client_config_dir(workspace, "codex").exists())
+            self.assertFalse((target / ".agents").exists())
+
     def test_windows_helper_subprocesses_receive_no_acceptora_credentials(self) -> None:
         module = load_installer_module()
         token_values = {
@@ -1248,7 +1394,14 @@ class InstallerTest(unittest.TestCase):
         self.assertFalse(
             any(source.split("/", 1)[0] in {".git", ".github", ".verification"} for source in package_sources)
         )
-        self.assertTrue({"SKILL.md", "LICENSE", "agents/openai.yaml"}.issubset(skill_sources))
+        self.assertTrue(
+            {
+                "SKILL.md",
+                "LICENSE",
+                "agents/openai.yaml",
+                "scripts/store_project_credential.py",
+            }.issubset(skill_sources)
+        )
         self.assertNotIn("scripts/install.py", skill_sources)
         self.assertTrue(
             all(

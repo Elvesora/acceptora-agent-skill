@@ -12,14 +12,14 @@ Completion hooks and ordinary finished work in Codex, Claude Code, or Gemini CLI
 
 ## Rules
 
-- Never print, copy, or log the project-derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` value or any credential substring.
+- Never print or log the project-derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` value or any credential substring. The only permitted request for the value is the explicit missing-credential handoff to `init` below; never echo the reply.
 - Never pass `--confirm-connection`. That flag is the last step of `init`, not a diagnostic.
 - Never run `apply`, `rollback`, or `rollback-plan` from this command.
 - Load [client-capabilities.md](client-capabilities.md) before using client-specific discovery commands.
 
 ## 1. Credential presence
 
-Read the exact credential variable name from the validated installed runtime configuration. Confirm the process environment contains that project-derived name without reading its value into chat, files, or logs. If it is absent, report that and stop; the user must export it outside the conversation. Skip this check for an existing Antigravity receipt because only local status and rollback remain supported.
+Read the exact credential variable name from the validated installed runtime configuration. Confirm the process environment contains that project-derived name without printing its value. If it is absent for Codex, Claude Code, or Gemini CLI, switch to `init` and follow **Missing project credential** in [SETUP.md](../SETUP.md) before asking for the key; pass the validated receipt's public project ID as the helper's non-secret assertion. That procedure checks for an existing ignored project environment store, validates the key without persistence when one is selected, and otherwise uses the documented Windows current-user recovery. Resume `doctor` only after the required client restart, a fresh instruction read, and presence of the exact variable. Skip this check for an existing Antigravity receipt because only local status and rollback remain supported.
 
 ## 2. Installer identity
 
@@ -77,7 +77,7 @@ Installer status: <pass | fail | missing>
 Health: <pass | fail | missing>
 Discovery: skill <yes/no>, MCP <yes/no>, hooks <yes/no>
 Token: <present | missing>
-Next: <none | $acceptora init | reload the client | export the reported project-derived variable | review and approve rollback>
+Next: <none | $acceptora init | provide the selected project key for environment storage | restart the client | reload the client | review and approve rollback>
 ```
 
 Do not claim the project is human-verified. Do not claim it is connected unless a prior supported-client `init` health check with `--confirm-connection` already reported `connection_confirmation.status: confirmed` and this diagnostic still passes. Never report an Antigravity receipt as `ok` or lifecycle-supported.

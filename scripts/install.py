@@ -72,6 +72,7 @@ SKILL_FILES = {
     "SKILL.md",
     "scripts/build_source_manifest.py",
     "scripts/read_instruction_snapshot.py",
+    "scripts/store_project_credential.py",
     "scripts/validate_checklist_payload.py",
     "scripts/write_offline_outbox.py",
 }
@@ -82,6 +83,17 @@ WINDOWS_TRUSTED_INSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-185329
 WINDOWS_CODEX_SANDBOX_USERS_NAME = "CodexSandboxUsers"
 WINDOWS_READ_EXECUTE_SYNCHRONIZE_RIGHTS = 0x001200A9
 ACCEPTORA_TOKEN_PATTERN = r"^avt_[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]{48}$"
+PROJECT_ENV_TEMPLATE_PARTS = {
+    "default",
+    "defaults",
+    "dist",
+    "example",
+    "examples",
+    "sample",
+    "samples",
+    "template",
+    "templates",
+}
 MANAGED_HOOK_ID_PATTERN = re.compile(r"acceptora-target:([a-f0-9]{32})")
 PACKAGE_IDENTITY = "acceptora"
 RUNTIME_NAMESPACE = "acceptora/verify-generated-work/runtimes"
@@ -1164,6 +1176,144 @@ def _assert_supported_git_index(root: Path, git_executable: Path) -> None:
             raise InstallError("The pinned Git executable returned invalid index flags.")
         if tag == b"S" or tag.islower():
             raise InstallError("The strict Git source adapter does not support assume-unchanged or skip-worktree paths.")
+
+
+def _is_project_environment_filename(name: str) -> bool:
+    normalized = name.casefold()
+    parts = {part for part in re.split(r"[._-]+", normalized) if part}
+    if parts & PROJECT_ENV_TEMPLATE_PARTS:
+        return False
+    return (
+        normalized in {".env", ".envrc", ".dev.vars"}
+        or normalized.startswith(".env.")
+        or normalized.startswith(".dev.vars.")
+        or normalized.endswith(".env")
+    )
+
+
+def _assert_project_environment_storage(
+    root: Path,
+    git_executable: Path,
+    token_env: str,
+) -> None:
+    if token_env in os.environ:
+        return
+
+    discovered: dict[str, tuple[int, int, int, int, int]] = {}
+    try:
+        entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
+    except OSError as error:
+        raise InstallError("Project environment-file storage could not be inspected safely.") from error
+    for path in entries:
+        if not _is_project_environment_filename(path.name):
+            continue
+        if _is_linklike(path):
+            raise InstallError(
+                f"Project environment-file storage is not a regular non-link file: {path.name}"
+            )
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise InstallError(
+                f"Project environment-file storage changed during inspection: {path.name}"
+            ) from error
+        if not stat.S_ISREG(metadata.st_mode):
+            raise InstallError(
+                f"Project environment-file storage is not a regular non-link file: {path.name}"
+            )
+        if any(ord(character) < 32 or ord(character) == 127 for character in path.name):
+            raise InstallError("Project environment-file storage has an unsafe filename.")
+        try:
+            path.name.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as error:
+            raise InstallError("Project environment-file storage has a non-UTF-8 filename.") from error
+        discovered[path.name] = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+
+    if not discovered:
+        return
+
+    try:
+        process = subprocess.run(
+            [
+                str(git_executable),
+                "--literal-pathspecs",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.untrackedCache=false",
+                "-C",
+                str(root),
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+                *discovered,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_isolated_git_environment(),
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError("Project environment-file Git state could not be inspected safely.") from error
+    if process.returncode != 0 or process.stderr:
+        raise InstallError("Project environment-file Git state could not be inspected safely.")
+    if process.stdout and not process.stdout.endswith(b"\0"):
+        raise InstallError("Project environment-file Git state is invalid.")
+
+    records = process.stdout[:-1].split(b"\0") if process.stdout else []
+    try:
+        safe_paths = [record.decode("utf-8", errors="strict") for record in records]
+    except UnicodeDecodeError as error:
+        raise InstallError("Project environment-file Git state is not valid UTF-8.") from error
+    if len(safe_paths) != len(set(safe_paths)) or any(path not in discovered for path in safe_paths):
+        raise InstallError("Project environment-file Git state is invalid.")
+
+    for name, expected_identity in discovered.items():
+        path = root / name
+        if _is_linklike(path):
+            raise InstallError(f"Project environment-file storage changed during inspection: {name}")
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise InstallError(
+                f"Project environment-file storage changed during inspection: {name}"
+            ) from error
+        observed_identity = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+        )
+        if observed_identity != expected_identity or not stat.S_ISREG(metadata.st_mode):
+            raise InstallError(f"Project environment-file storage changed during inspection: {name}")
+
+    unsafe_paths = sorted(set(discovered) - set(safe_paths), key=str.casefold)
+    if unsafe_paths:
+        joined = ", ".join(unsafe_paths)
+        raise InstallError(
+            f"Project environment-file storage is not both Git-untracked and ignored: {joined}"
+        )
+    safe_paths.sort(key=str.casefold)
+    if len(safe_paths) > 1:
+        raise InstallError(
+            "Multiple Git-ignored project environment files require an explicit user choice: "
+            + ", ".join(safe_paths)
+        )
+    raise InstallError(
+        "A Git-ignored project environment file is available; stop installation, validate the key "
+        f"with the documented validation-only flow, then ask the user to store {token_env} in {safe_paths[0]}"
+    )
 
 
 def _validated_base_url(value: str) -> SplitResult:
@@ -2733,6 +2883,7 @@ def _build_plan(
         python_executable = _resolved_python_executable(root, getattr(args, "python_executable", None))
         git_executable = _resolved_git_executable(root, getattr(args, "git_executable", None))
         _assert_actual_git_worktree_root(root, git_executable)
+        _assert_project_environment_storage(root, git_executable, token_env)
         _assert_strict_source_capture(root, git_executable)
     source_identity = _package_source_identity(args, git_executable, historical=historical)
     server_alias = f"acceptora-{_runtime_identity(root, args.client)[:12]}"
