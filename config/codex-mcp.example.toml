@@ -1,8 +1,0 @@
-[mcp_servers.acceptora]
-url = "https://verify.example.test/mcp"
-bearer_token_env_var = "ACCEPTORA_AGENT_TOKEN_PROJ_REPLACE_WITH_PROJECT_ULID"
-# Current Codex per-server approval key; verify write prompts in the post-install client smoke test.
-default_tools_approval_mode = "writes"
-startup_timeout_sec = 10
-tool_timeout_sec = 60
-enabled = true

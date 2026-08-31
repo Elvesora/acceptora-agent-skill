@@ -1,86 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "distribution": {
     "repository_url": "https://github.com/Elvesora/acceptora-agent-skill",
     "branch": "main"
   },
   "skill": {
     "name": "acceptora",
-    "version": "1.2.3"
+    "version": "1.0.0"
   },
   "integration": {
-    "name": "verify-generated-work",
     "version": "1.0.0"
   },
   "contract": {
-    "version": "1.0.0",
-    "mcp_protocol_version": "2025-11-25"
-  },
-  "server": {
-    "name": "Acceptora Verification",
     "version": "1.0.0"
-  },
-  "transports": {
-    "mcp": "/mcp",
-    "rest": "/api/v1/integrations",
-    "openapi": "/api/v1/integrations/openapi.json"
-  },
-  "tools": [
-    {
-      "name": "resolve_feature",
-      "required_scope": "features:resolve",
-      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:20274cb34644f31cfa1b13108d72fcbdb2840b5c253297082e550d6a43031e41",
-      "output_schema_sha256": "sha256:2ee626547b2c5ae454cb2f2d82fd8e6bfc99ac3e0014e8a9ab6e5961ed8d3b07"
-    },
-    {
-      "name": "get_feature_context",
-      "required_scope": "features:read",
-      "annotations": {"readOnlyHint": true, "openWorldHint": false},
-      "input_schema_sha256": "sha256:126917e9de98343f07fa2f6e0abb984d0a8c82ccbd32220b5a8861609ff630a5",
-      "output_schema_sha256": "sha256:9726cfdec6396d531237d0860594241937f3d1ffc48f9bbab8b175da65f48292"
-    },
-    {
-      "name": "reconcile_checklist",
-      "required_scope": "checklists:write",
-      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:19b440c209bc4c703fc308e607b32bdd2fbf084599fe4721f6f9d9a1feb681b2",
-      "output_schema_sha256": "sha256:5251c962bfe3bfaa99b445dc54c11e5c24182219d55cb83434c34e2d42f3b39b"
-    },
-    {
-      "name": "get_verification_feedback",
-      "required_scope": "feedback:read",
-      "annotations": {"readOnlyHint": true, "openWorldHint": false},
-      "input_schema_sha256": "sha256:f0623c224fe90c7c7d5c4aab06828b429a878e73a4b92bc297e71094c85e24b8",
-      "output_schema_sha256": "sha256:c761291148a841141a6af25f37396257c3d56d546a6e11f1c49c447a32adc34a"
-    },
-    {
-      "name": "address_feedback",
-      "required_scope": "feedback:address",
-      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:c8bf7c22d7f82523fca19e3fc20b86d4597b2372cdff9f5dc418647294bfe83b",
-      "output_schema_sha256": "sha256:32be21fa83fe94b4e6a9cb7515a210b222ec3830feb315ff7eff8feb61652f4e"
-    },
-    {
-      "name": "get_verification_status",
-      "required_scope": "features:read",
-      "annotations": {"readOnlyHint": true, "openWorldHint": false},
-      "input_schema_sha256": "sha256:cf5df082583f619b1901d08e401808cadfc797c0067e0741907d93d933a75c69",
-      "output_schema_sha256": "sha256:0aadd3c9ac185be9ed9012ee6df7131727053de1b0c14d5a95994bf7247435a6"
-    },
-    {
-      "name": "check_completion_gate",
-      "required_scope": "gates:read",
-      "annotations": {"readOnlyHint": true, "openWorldHint": false},
-      "input_schema_sha256": "sha256:a855b0fb4d7eab4a295648a755fd209392a7d3b0d175860a830126063a015355",
-      "output_schema_sha256": "sha256:ccf8658876e3bb2dd780e6c749dd5aa3b6297d4e2cf4ff2bb83fbc7ac22366d2"
-    },
-    {
-      "name": "record_verification_exception",
-      "required_scope": "exceptions:write",
-      "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false, "openWorldHint": false},
-      "input_schema_sha256": "sha256:634ab6278afc93094d8903def582a5e9dc24a6cff749503f28bb1753e0bbe0a5",
-      "output_schema_sha256": "sha256:81b5c4dfc43c9bee8212cec2f9cfa1865bba60d4bc80b7c960ffc33d7b2edecd"
-    }
-  ]
+  }
 }

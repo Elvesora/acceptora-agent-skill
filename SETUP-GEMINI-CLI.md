@@ -1,5 +1,1 @@
-# Gemini CLI setup
-
-Use the current Git worktree as the installation target and `gemini-cli` as the client.
-
-Fresh-clone only the `main` branch of `https://github.com/Elvesora/acceptora-agent-skill` outside the target. From that checkout, reread this file and `SETUP.md` completely before making any change, then follow the **Coding-agent install or update** procedure in `SETUP.md`.
+Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP.md and follow it for the current Git worktree with client `gemini-cli`.

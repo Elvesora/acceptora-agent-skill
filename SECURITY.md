@@ -1,44 +1,21 @@
 # Security Policy
 
-## Supported production source
+## Supported source
 
-| Source | Security updates |
-| --- | --- |
-| Canonical `main` branch | Supported |
+Install and update only from the canonical repository's `main` branch. A semantic version describes compatibility; it does not replace the recorded Git commit.
 
-Security fixes are published to the canonical repository's production `main` branch. Install from a fresh clone of that branch. Application-hosted mirrors and automatically generated source archives are not supported acquisition paths. Update checks always compare with canonical `main`; semantic versions describe compatibility but do not select the production source. Keep the selected agent client, Python, Git, and operating system current.
+## Report a vulnerability
 
-## Reporting a vulnerability
+Use the private [GitHub Security Advisory form](https://github.com/Elvesora/acceptora-agent-skill/security/advisories/new). If it is unavailable, request a private channel through the [Acceptora contact page](https://www.acceptora.com/contact). Do not put credentials, customer data, private source, production URLs, or exploit details in a public issue or initial contact request.
 
-Do not open a public issue for a suspected vulnerability. Use the private [GitHub Security Advisory form](https://github.com/Elvesora/acceptora-agent-skill/security/advisories/new) when it is available.
+## Current security boundary
 
-If the private-reporting form is unavailable, use the [Acceptora contact page](https://www.acceptora.com/contact) only to request a secure reporting channel. Do not put vulnerability details, reproduction steps, credentials, source code, personal data, customer data, or production URLs in the initial contact request.
+- Every worktree binds to one public project ID and its derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable.
+- The key is authenticated against Acceptora before installation writes project state.
+- The installer never writes a key into the repository, `.acceptora/config.json`, MCP configuration, logs, or output.
+- A possible project environment file is inspected only by filename and Git metadata; its contents are never read or written.
+- Client skills, instructions, MCP configuration, and public binding metadata are project-local. Unrelated settings are preserved.
+- Authenticated requests use the fixed HTTPS origin and refuse redirects.
+- Agents may synchronize verification material but cannot make human acceptance decisions.
 
-Include through the private channel:
-
-- the affected package, integration, contract, Python, Git, operating-system, and client versions;
-- the security impact and affected installation, hook, MCP, REST, health, distribution, or recovery operation;
-- reproducible steps using synthetic data and a disposable repository;
-- whether credentials, logs, redirects, TLS, response limits, filesystem boundaries, source capture, plan acceptance, rollback, or MCP approval behavior are involved;
-- any proposed mitigation.
-
-Revoke any credential that may have been exposed during investigation.
-
-## Security model
-
-The package applies the following controls:
-
-- the production source is the canonical repository's `main` branch; each supported installation records its exact commit and deterministic file digests;
-- installation is non-mutating until the user accepts the exact reconstructed plan digest;
-- apply and rollback recheck source, input, destination, ownership, and digest preconditions;
-- trusted lifecycle commands run from an installer-owned external runtime rather than repository-controlled copies;
-- Git source capture rejects submodules, unresolved index stages, hidden index flags, unsafe paths, special files, and unstable reads;
-- bearer tokens are loaded from the project-derived environment-variable name pinned in each installer-owned runtime and are not written to plans, receipts, repository configuration, logs, or output;
-- when the derived variable is missing, the agent first checks only root-level filenames and Git metadata for an existing untracked and ignored project environment store; it never reads that file;
-- the agent may request the key only in an explicit private-chat recovery exchange; a separate helper authenticates it with Acceptora and verifies its project and required scopes before either the user places it in the selected ignored file or Windows recovery writes it to the current-user environment;
-- remote clients do not follow redirects and permit plain HTTP only for loopback development;
-- network timeouts, retry counts, request sizes, response sizes, and error text are bounded;
-- hooks use bounded loop protection and fail open with a visible warning when enforcement cannot run;
-- no agent operation can make a human verification decision.
-
-The operating system, current account, trusted administrators, repository code, agent client, project environment loader, effective hooks, MCP configuration, and any private conversation used to supply a missing key remain part of the security boundary. Receipt checksums detect corruption and bind reviewed plans; they do not authenticate a receipt against the current account, so a party able to rewrite the private runtime and recompute its receipt is already inside that trusted boundary and can change rollback authority. Every project token exported to one client process can be inherited by repository commands in that process, and a persistent current-user environment value can be read by other processes running as that user; project-derived names route credentials correctly but do not provide operating-system secrecy between repositories. An ignored `.env` file alone does not load a token into Codex, Claude Code, Gemini CLI, hooks, or health checks. Use a verified existing loader and separate client processes with only one exported project token when stronger isolation is required. Do not install or run the integration on an untrusted fork or pull request.
+Environment variables are readable by code running in the same process context. A Windows current-user value can also be read by other processes running as that user. Use separate client processes and each project's existing secret loader when stronger isolation is required.
