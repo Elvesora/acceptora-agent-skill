@@ -1,128 +1,96 @@
 # Acceptora Agent Skill
 
-[![Tests](https://github.com/Elvesora/acceptora-agent-skill/actions/workflows/tests.yml/badge.svg)](https://github.com/Elvesora/acceptora-agent-skill/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The Acceptora Agent Skill connects coding agents to Acceptora's durable manual-verification workflow. It keeps one source-bound acceptance checklist synchronized after software, content, configuration, API, SDK, integration, data, or deployment changes in any programming language, framework, or mixed-stack repository.
+Acceptora connects a coding agent to a project-scoped manual-verification workflow. The skill reads fresh owner instructions, uses Acceptora through MCP or REST, and keeps verification steps synchronized with implementation changes. Human verification decisions remain human-only.
 
-> **Quick start:** [GETTING-STARTED.md](GETTING-STARTED.md). Export the project's `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable, paste the client's one-line onboarding prompt into the target worktree, and approve the exact installation-plan digest.
+## What it does
 
-If the project variable is missing, the agent first checks filenames and Git metadata for an existing untracked and ignored project environment store without reading it. When one exists, the helper authenticates the private-chat key without persistence, the user places the derived variable in that file, and installation stops until the project's existing loader exposes it to a restarted client. Otherwise Windows recovery validates and stores it under the derived current-user environment name. Other same-user processes can read current-user environment values; use a separate client process with only one project key for stronger isolation.
+- installs from canonical GitHub `main` into one project and one supported client;
+- validates and isolates each project's key;
+- checks GitHub for skill updates during the project preflight;
+- rereads account and project instructions before work and before drafting manual verification steps; and
+- uses MCP first, with the equivalent versioned REST API as fallback.
 
-This repository distributes a standalone agent skill and its secure installer for Codex, Claude Code, and Gemini CLI. It retains the Antigravity CLI profile only so an existing installation can be inspected and rolled back. It is not a Codex plugin. The skill uses the configured MCP server or its contract-equivalent versioned REST API; it does not require Laravel, PHP, Composer, or an Acceptora SDK in the target project. Applications and automation in any language can also use the REST API directly without installing an agent client.
-
-No agent operation can make a human verification decision or grant final acceptance.
-
-## What it provides
-
-- Deterministic Git source manifests that bind the checklist to the reviewed revision without language- or framework-specific path assumptions.
-- Reconciliation that preserves human decisions and reopens only materially affected checks.
-- Structured automated evidence that separates execution outcome, proof sufficiency, and `not_run` blocker reason without granting acceptance.
-- Authenticated task-start hooks for Codex, Claude Code, and Gemini CLI that fetch owner verification guidance into a private external snapshot, expose only a trusted-reader directive to the model, and fail closed on prompt events when the required reread cannot be completed.
-- Completion hooks for Codex, Claude Code, and Gemini CLI with bounded, visible fail-open behavior after the task-start instruction boundary has succeeded.
-- Supported-client task-start checks that compare the installed commit with the production `main` branch and notify without fetching or applying updates.
-- A deterministic package-owned ZIP builder whose embedded provenance binds generated artifacts to one clean production `main` commit.
-- Streamable HTTP MCP configuration and a language-neutral [REST API contract](references/rest-api-contract.md).
-- Supported-client plan-and-apply installation with exact digest acceptance, conflict detection, status, and digest-bound rollback.
-- A pinned external runtime for health checks, hooks, recovery, and lifecycle commands.
-- Secret rejection, no-follow redirect behavior, bounded network payloads, and offline recovery.
-
-## Agent-install requirements
-
-These requirements run the skill, source adapter, and hooks. They do not constrain the target project's language, framework, runtime, or build system.
-
-- Python 3.11 or newer and Git.
-- Codex CLI 0.144.0 or newer, or a supported Claude Code or Gemini CLI release.
-- A short-lived Acceptora project credential with the scopes listed in [SETUP.md](SETUP.md#agent-client-prerequisites), exported under its project-derived variable name.
-- A trusted Git worktree that satisfies the installer's strict source and filesystem checks.
-
-For a direct REST integration, the target environment needs only an HTTPS client, the published OpenAPI contract, and a securely stored project credential; Git, Python, and a coding-agent client are not required.
-
-Machine-readable provider paths, templates, lifecycle events, and reviewed builds are centralized in [`config/client-profiles.json`](config/client-profiles.json). The dated, human-readable [client capability matrix](references/client-capabilities.md) distinguishes provider-documented capabilities from the defaults generated by Acceptora.
+It does not install application dependencies, add an Acceptora SDK to the target, or mutate shared user configuration.
 
 ## Install
 
-Start with [GETTING-STARTED.md](GETTING-STARTED.md). [SETUP.md](SETUP.md) is the security specification for source acquisition, credentials, plan review, installation, client checks, health verification, explicit connection confirmation, rollback, upgrades, and REST-only integration. Public install commands pass an explicit supported `--client`. `--format text` prints a human plan, `--output` stores the JSON plan, and `apply` still requires the exact plan digest. Do not create or apply a new Antigravity plan, reconnect it, or upgrade it.
+Create a project credential in Acceptora, open the target Git worktree in your client, and paste its one-line prompt:
 
-The canonical production source and update authority is the `main` branch of:
-
-- `https://github.com/Elvesora/acceptora-agent-skill`
-
-Give the signed-in Acceptora onboarding page's one-line client prompt to Codex, Claude Code, or a supported Gemini CLI environment. It opens that client's `SETUP-*.md` entrypoint; the agent then fresh-clones `main` outside the target worktree and follows the shared lifecycle in `SETUP.md`. The Acceptora application links to this repository but does not mirror or host package artifacts. Do not install from another remote, an application-hosted mirror, or an automatically generated GitHub source archive, and do not run the installer from the target repository.
-
-The secure installation sequence is:
-
-1. Obtain a fresh canonical `main` checkout outside the target worktree.
-2. Verify and record the full source commit, then generate a non-mutating installation plan.
-3. Review and explicitly accept the exact plan SHA-256 before apply.
-4. Confirm the receipt records the canonical repository, branch, and commit.
-5. Confirm client skill, MCP, and hook discovery, then verify installer status.
-6. As the final setup step, run the pinned external health check with `--confirm-connection`; it validates the server contract and integration versions independently of the package release, then marks the project connected only after every contract check passes.
-
-## Supported integrations
-
-Codex, Claude Code, and Gemini CLI are the supported integrations. Their provider paths, templates, and lifecycle events are implemented through the central [client provider registry](config/client-profiles.json). Review the dated [capability matrix](references/client-capabilities.md) for support status, generated paths, MCP behavior, lifecycle events, discovery checks, and the official documentation used for the review. Configuration examples live in [`config/`](config), and client hook adapters live in [`adapters/`](adapters).
-
-Antigravity CLI `1.1.22` is not a supported Acceptora lifecycle client. A real headless Windows smoke confirmed that Antigravity loaded `hooks.json` but did not dispatch either the configured `PreInvocation` or `Stop` handler. Hook visibility and direct execution of a generated command therefore do not prove lifecycle operation. The retained Antigravity profile is for `status`, `rollback-plan`, and `rollback` of an existing receipt only.
-
-Google directs individual Google-account users away from Gemini CLI to Antigravity, but that does not make the current Antigravity lifecycle usable by Acceptora. Use Codex, Claude Code, or Gemini CLI authenticated through a Gemini Code Assist Standard or Enterprise license, a supported paid API key, or Vertex AI. There is currently no supported Acceptora Antigravity installation path for individual Google-account OAuth. See Google's [consumer-account deprecation](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals), [transition announcement](https://developers.googleblog.com/en/an-important-update-transitioning-gemini-cli-to-antigravity-cli/), [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration/), and [Gemini CLI authentication guide](https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/authentication.mdx).
-
-## Multiple repositories and projects
-
-Install the skill separately in every target Git worktree. The skill and managed instruction block are project-local; the external runtime, hooks, and MCP configuration are user-scoped and merged under a target-specific identity. One client/worktree pair binds to one Acceptora project. Different worktrees and projects can coexist in the same client configuration, and one installation can be rolled back without removing another installation or unrelated user settings.
-
-The credential variable is derived from the Acceptora project ID. Repositories bound to the same Acceptora project reuse the same variable name; different projects use different names. Missing-credential recovery validates the key against the authenticated project endpoint before the user stores it in an existing ignored project environment file or the Windows helper persists it. A client process can inherit every project token exported to it, so use a separate process with only the required token when stronger project isolation is needed.
-
-## Security boundary
-
-Use a short-lived, least-scope credential from a secure environment variable or secret provider. Never commit credentials or place them in product prompts, URLs, plans, logs, fixtures, or tracked repository configuration. The only prompt exception is the explicit missing-credential recovery exchange described above; the agent must never echo that reply or inspect a selected ignored environment file. The operating system, current user account, trusted administrators, repository code, client configuration, project environment loader, and that private conversation are part of the trust boundary.
-
-The installer never reads the token, grants client trust, or approves tools. Review the complete model in [SETUP.md](SETUP.md#boundary) and report suspected vulnerabilities through [SECURITY.md](SECURITY.md).
-
-## Package layout
-
-- [`GETTING-STARTED.md`](GETTING-STARTED.md) is the human tutorial.
-- `SETUP-CODEX.md`, `SETUP-CLAUDE-CODE.md`, and `SETUP-GEMINI-CLI.md` are the client-specific onboarding entrypoints.
-- [`SKILL.md`](SKILL.md) is the `acceptora` skill and routes `$acceptora init`, `$acceptora doctor`, and the default completion workflow.
-- [`references/`](references) contains install and doctor commands, contracts, lifecycle rules, reconciliation guidance, and task-specific patterns loaded only when needed.
-- [`scripts/`](scripts) contains deterministic installation, bundle, validation, health, source-manifest, and recovery tooling.
-- [`config/client-profiles.json`](config/client-profiles.json) is the canonical client provider registry; [`adapters/`](adapters) and the remaining [`config/`](config) files contain the referenced integration templates.
-- [`tests/`](tests) covers success, failure, security, source distribution, and cross-client behavior.
-
-Repository documentation and community files remain outside the installed skill payload.
-
-## Validate the source package
-
-Run the complete Python test suite:
+**Codex**
 
 ```text
-python -m unittest discover -s tests -p "test_*.py"
+Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-CODEX.md and follow it.
 ```
 
-On Windows, keep line-ending behavior local to this checkout and verify it before validating a production change:
+**Claude Code**
 
 ```text
-git config --local core.autocrlf false
-git config --local --get core.autocrlf
+Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-CLAUDE-CODE.md and follow it.
 ```
 
-The second command must print `false`. This does not change the user's global Git configuration. Installation must use the verified acquisition path and the explicit-plan acceptance flow in [SETUP.md](SETUP.md#obtain-the-production-source).
-
-A clean production checkout can also verify the exact generated bundle shape:
+**Gemini CLI**
 
 ```text
-python -B -I scripts/build_release.py --dist-dir "<new-directory-outside-this-checkout>" --source-commit "<full-HEAD-commit>"
+Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-GEMINI-CLI.md and follow it.
 ```
 
-The builder refuses a publishable bundle from dirty or non-Git source and emits one ZIP, its external manifest, and `SHA256SUMS`.
+The client setup files intentionally contain one instruction line. The shared, maintained procedure is [SETUP.md](SETUP.md).
 
-## Community and support
+## Project isolation
 
-- Read release changes in [CHANGELOG.md](CHANGELOG.md).
-- Get usage help through [SUPPORT.md](SUPPORT.md).
-- Report reproducible defects with a safe, minimal GitHub issue.
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
-- Follow the [Code of Conduct](CODE_OF_CONDUCT.md) in project spaces.
-- Use the private process in [SECURITY.md](SECURITY.md) for suspected vulnerabilities.
+Every worktree is bound in `.acceptora/config.json` to one public project ID and one derived variable name:
 
-Acceptora Agent Skill is available under the [MIT License](LICENSE).
+```text
+ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>
+```
+
+The key is authenticated before storage. If the project already has an untracked, Git-ignored environment store, installation stops and asks the user to place the validated key there. The existing project loader must expose it to a restarted client. If no such store exists, Windows can use the explicit validated current-user fallback; other platforms stop until the user chooses a project-local secret-loading mechanism.
+
+Tokens are never written to Acceptora config or MCP config. Different projects keep different variable names and bindings.
+
+## Installed files
+
+The installer writes only project-local state:
+
+- `.acceptora/config.json`;
+- `.agents/skills/acceptora`, `.claude/skills/acceptora`, or `.gemini/skills/acceptora`;
+- one managed client-instruction line; and
+- `.codex/config.toml`, `.mcp.json`, or `.gemini/settings.json` for the project-native MCP connection.
+
+Unrelated instructions and client settings are preserved. An unmanaged conflicting `acceptora` MCP entry fails visibly instead of being overwritten.
+
+## Verification instructions
+
+Account and project owners can define guidance for:
+
+- project analysis;
+- manual verification wording and sequence; and
+- test data, including safe seeded records, real test links, and concrete IDs.
+
+The agent fetches the effective instructions before work and fetches them again immediately before it creates or revises manual steps. It never substitutes a stale local snapshot.
+
+## MCP and REST
+
+The project MCP endpoint is `https://www.acceptora.com/mcp`. REST exposes the same workflow operations and a live OpenAPI document, so any language can integrate without this skill. See [API and MCP](references/api-mcp.md).
+
+## Replacing a legacy installation
+
+Do not overwrite an existing hook/runtime installation. First use that installation's own trusted rollback procedure and obtain its required rollback-digest approval. Then install the current skill from a fresh canonical `main` checkout.
+
+## Package map
+
+- [SKILL.md](SKILL.md): agent workflow and acceptance boundary
+- [SETUP.md](SETUP.md): installation and credential procedure
+- `scripts/install.py`: project-local install, update, status, and uninstall
+- `scripts/project_context.py`: key validation, fresh instructions, and update preflight
+- [references/api-mcp.md](references/api-mcp.md): transport and operation summary
+
+## Validate the skill
+
+Use the Codex skill quick validator against the repository root. Functional behavior is covered by executable tests; documentation wording is not a test contract.
+
+## Support
+
+See [SUPPORT.md](SUPPORT.md), [SECURITY.md](SECURITY.md), and [CONTRIBUTING.md](CONTRIBUTING.md).

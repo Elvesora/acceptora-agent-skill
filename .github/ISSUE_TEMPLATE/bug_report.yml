@@ -1,25 +1,20 @@
 name: Bug report
-description: Report a reproducible defect in Acceptora Agent Skill.
-title: '[Bug]: '
+description: Report a reproducible Acceptora Agent Skill defect.
+title: "[Bug]: "
 body:
   - type: markdown
     attributes:
-      value: |
-        Remove credentials, personal data, customer data, private source material, production URLs, and sensitive payloads. Follow SECURITY.md for suspected vulnerabilities.
+      value: Remove credentials, private source, personal data, customer data, and production payloads. Use SECURITY.md for vulnerabilities.
   - type: input
-    id: package_version
+    id: version
     attributes:
-      label: Package version
-      description: The exact version from config/package-manifest.json plus the installed source commit from installer status or the bundle manifest.
-      placeholder: 1.2.3
+      label: Version and installed commit
     validations:
       required: true
   - type: input
     id: environment
     attributes:
-      label: Environment
-      description: Python, Git, operating-system, and agent-client versions.
-      placeholder: Python 3.14.7, Git 2.55.0, Windows 11, Codex CLI 0.147.0
+      label: Python, Git, operating system, and client versions
     validations:
       required: true
   - type: dropdown
@@ -27,25 +22,18 @@ body:
     attributes:
       label: Affected operation
       options:
-        - Installation plan or apply
-        - Status or rollback
-        - Skill discovery
-        - Hook lifecycle
-        - MCP connection or tool
-        - REST integration
-        - Health check
-        - Source manifest
-        - Offline recovery
-        - Git source or update check
-        - Release bundle builder or generated artifact
+        - Install or update
+        - Status or uninstall
+        - Project preflight or instructions
+        - MCP or REST
+        - Release bundle
         - Other
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: Minimal reproduction
-      description: Use a disposable repository and synthetic data. Include the exact safe commands and redacted output.
+      label: Minimal synthetic reproduction
     validations:
       required: true
   - type: textarea
@@ -58,7 +46,6 @@ body:
     id: actual
     attributes:
       label: Actual behavior
-      description: Include only redacted error codes, correlation IDs, and safe diagnostics.
     validations:
       required: true
   - type: checkboxes
@@ -66,7 +53,5 @@ body:
     attributes:
       label: Safety confirmation
       options:
-        - label: I removed credentials, tokens, private source material, personal data, customer data, and production payloads.
-          required: true
-        - label: This report does not disclose a suspected security vulnerability.
+        - label: I removed all credentials and private data, and this is not a vulnerability report.
           required: true
