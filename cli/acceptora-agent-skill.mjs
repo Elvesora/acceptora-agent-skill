@@ -23,6 +23,7 @@ const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGE_DOCUMENT = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8'));
 const ACCEPTORA_ORIGIN = 'https://www.acceptora.com';
 const PROJECT_URL = `${ACCEPTORA_ORIGIN}/api/v1/integrations/project`;
+const CONNECTION_CONFIRMATION_URL = `${ACCEPTORA_ORIGIN}/api/v1/integrations/connection/confirm`;
 const CONFIG_PATH = '.acceptora/config.json';
 const INSTALL_MANIFEST_PATH = '.acceptora/install-manifest.json';
 const PROJECT_ENV_PATH = '.acceptora-env';
@@ -440,6 +441,19 @@ async function validateProjectKey(runtime, token) {
   }
   validateVerificationInstructions(payload.verification_instructions);
   return identity;
+}
+
+async function confirmConnection(runtime, token) {
+  await fetchJson(runtime, CONNECTION_CONFIRMATION_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'User-Agent': `Acceptora-Agent-Skill/${PACKAGE_DOCUMENT.version}`,
+    },
+    body: '{}',
+  }, 'Acceptora connection confirmation failed. Local setup is complete; run update to retry confirmation. Do not run install again.');
 }
 
 async function hiddenPrompt(runtime) {
@@ -1009,6 +1023,7 @@ async function installCommand(runtime, options, root) {
     throw error;
   }
 
+  await confirmConnection(runtime, selected.token);
   writeLine(runtime.stdout, `Acceptora installed for ${profile.label}.`);
   writeLine(runtime.stdout, `Project: ${identity.projectId}`);
   writeLine(runtime.stdout, `Project key stored in ${PROJECT_ENV_PATH}.`);
@@ -1063,6 +1078,7 @@ async function updateCommand(runtime, options, root) {
     rollbackProjectMutation(root, skillMutation, snapshots, skillRoot);
     throw error;
   }
+  await confirmConnection(runtime, selected.token);
   writeLine(runtime.stdout, `Acceptora updated for ${profile.label}. Add /${PROJECT_ENV_PATH} to .gitignore before committing.`);
 }
 

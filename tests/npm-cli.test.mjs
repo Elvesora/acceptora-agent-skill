@@ -17,6 +17,7 @@ import test from 'node:test';
 
 import { main } from '../cli/acceptora-agent-skill.mjs';
 
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const PROJECT_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const CREDENTIAL_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAA';
 const PROJECT_ID = `proj_${PROJECT_ULID}`;
@@ -99,9 +100,22 @@ function projectResponse(projectId = PROJECT_ID) {
   }), { status: 200 });
 }
 
-function fakeFetch(url) {
-  if (String(url).endsWith('/api/v1/integrations/project')) {
+function confirmationResponse(projectId = PROJECT_ID) {
+  return new Response(JSON.stringify({
+    project_id: projectId,
+    connection_status: 'connected',
+    confirmed_at: '2026-09-02T12:00:00.000Z',
+    already_connected: false,
+    correlation_id: '019a0000-0000-7000-8000-000000000001',
+  }), { status: 200 });
+}
+
+function fakeFetch(url, options = {}) {
+  if (String(url).endsWith('/api/v1/integrations/project') && options.method === 'GET') {
     return Promise.resolve(projectResponse());
+  }
+  if (String(url).endsWith('/api/v1/integrations/connection/confirm') && options.method === 'POST') {
+    return Promise.resolve(confirmationResponse());
   }
   throw new Error(`Unexpected URL: ${url}`);
 }
@@ -173,10 +187,10 @@ test('install stores the key only in the project credential file and completes f
         const config = JSON.parse(readFileSync(join(root, '.acceptora/config.json'), 'utf8'));
         assert.equal(config.project_id, PROJECT_ID);
         assert.equal(config.token_env, TOKEN_ENV);
-        assert.equal(config.installed_version, '1.0.2');
+        assert.equal(config.installed_version, PACKAGE_VERSION);
         const manifest = JSON.parse(readFileSync(join(root, '.acceptora/install-manifest.json'), 'utf8'));
         assert.equal(manifest.client, client);
-        assert.equal(manifest.package_version, '1.0.2');
+        assert.equal(manifest.package_version, PACKAGE_VERSION);
         assert.equal(Object.keys(manifest.payload).length, 5);
         assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
         assert.match(stdout.value, /Add \/\.acceptora-env to \.gitignore/);
@@ -202,6 +216,71 @@ test('install stores the key only in the project credential file and completes f
         rmSync(root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test('install and update explicitly confirm the authenticated project connection', async () => {
+  const root = createProject();
+  try {
+    const requests = [];
+    const { runtime, stderr } = testRuntime(root, {
+      fetch: (url, options = {}) => {
+        requests.push({ url: String(url), options });
+        return fakeFetch(url, options);
+      },
+    });
+
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 0, stderr.value);
+    assert.deepEqual(requests.map((request) => request.options.method), ['GET', 'POST']);
+
+    const installConfirmation = requests[1];
+    assert.match(installConfirmation.url, /\/api\/v1\/integrations\/connection\/confirm$/);
+    assert.equal(installConfirmation.options.headers.Authorization, `Bearer ${TOKEN}`);
+    assert.equal(installConfirmation.options.headers.Accept, 'application/json');
+    assert.equal(installConfirmation.options.headers['Content-Type'], 'application/json');
+    assert.equal(installConfirmation.options.headers['User-Agent'], `Acceptora-Agent-Skill/${PACKAGE_VERSION}`);
+    assert.equal(installConfirmation.options.body, '{}');
+
+    requests.length = 0;
+    assert.equal(await main(['update'], runtime), 0, stderr.value);
+    assert.deepEqual(requests.map((request) => request.options.method), ['GET', 'POST']);
+    assert.equal(requests[1].options.headers.Authorization, `Bearer ${TOKEN}`);
+    assert.equal(requests[1].options.body, '{}');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('failed connection confirmation keeps the installation and update retries it', async () => {
+  const root = createProject();
+  try {
+    let confirmationAttempts = 0;
+    let rejectConfirmation = true;
+    const { runtime, stdout, stderr } = testRuntime(root, {
+      fetch: (url, options = {}) => {
+        if (String(url).endsWith('/api/v1/integrations/connection/confirm')) {
+          confirmationAttempts += 1;
+          return Promise.resolve(rejectConfirmation
+            ? new Response(JSON.stringify({ error: 'unavailable' }), { status: 503 })
+            : confirmationResponse());
+        }
+        return fakeFetch(url, options);
+      },
+    });
+
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 2);
+    assert.match(stderr.value, /Acceptora connection confirmation failed/);
+    assert.match(stderr.value, /run update to retry confirmation/);
+    assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
+    assert.equal(existsSync(join(root, '.acceptora/config.json')), true);
+    assert.equal(existsSync(join(root, '.agents/skills/acceptora/SKILL.md')), true);
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+
+    rejectConfirmation = false;
+    assert.equal(await main(['update'], runtime), 0, stderr.value);
+    assert.equal(confirmationAttempts, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -435,7 +514,7 @@ test('update migrates a 1.0.1 project variable into .acceptora-env without anoth
         assert.equal(await main(['update'], migrated.runtime), 0, migrated.stderr.value);
 
         const migratedConfig = JSON.parse(readFileSync(configPath, 'utf8'));
-        assert.equal(migratedConfig.installed_version, '1.0.2');
+        assert.equal(migratedConfig.installed_version, PACKAGE_VERSION);
         assert.equal(migratedConfig.token_env, TOKEN_ENV);
         assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
       } finally {
@@ -640,9 +719,15 @@ test('different worktrees keep different keys in their own .acceptora-env files'
     const firstRuntime = testRuntime(first).runtime;
     const secondRuntime = testRuntime(second, {
       readSecret: async () => secondToken,
-      fetch: (url) => String(url).endsWith('/api/v1/integrations/project')
-        ? Promise.resolve(projectResponse(secondProjectId))
-        : Promise.reject(new Error(`Unexpected URL: ${url}`)),
+      fetch: (url, options = {}) => {
+        if (String(url).endsWith('/api/v1/integrations/project') && options.method === 'GET') {
+          return Promise.resolve(projectResponse(secondProjectId));
+        }
+        if (String(url).endsWith('/api/v1/integrations/connection/confirm') && options.method === 'POST') {
+          return Promise.resolve(confirmationResponse(secondProjectId));
+        }
+        return Promise.reject(new Error(`Unexpected URL: ${url}`));
+      },
     }).runtime;
     assert.equal(await main(['install', '--client', 'codex'], firstRuntime), 0);
     assert.equal(await main(['install', '--client', 'codex'], secondRuntime), 0);
