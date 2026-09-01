@@ -1,0 +1,39 @@
+{
+  "name": "acceptora-agent-skill",
+  "version": "1.0.0",
+  "description": "Project-local Acceptora skill and MCP installer for coding agents",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "acceptora-agent-skill": "cli/acceptora-agent-skill.mjs"
+  },
+  "files": [
+    "cli/",
+    "agents/openai.yaml",
+    "references/api-mcp.md",
+    "scripts/project_context.py",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/npm-cli.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Elvesora/acceptora-agent-skill.git"
+  },
+  "homepage": "https://www.acceptora.com/onboarding",
+  "bugs": {
+    "url": "https://github.com/Elvesora/acceptora-agent-skill/issues"
+  },
+  "keywords": [
+    "agent-skills",
+    "codex",
+    "claude-code",
+    "gemini-cli",
+    "mcp"
+  ]
+}

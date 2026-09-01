@@ -4,7 +4,7 @@ Use the [Acceptora contact page](https://www.acceptora.com/contact) for account,
 
 Open a GitHub issue for a reproducible package defect that can be shown with synthetic data. Include:
 
-- package version and installed commit;
+- installed npm version and ownership-manifest status;
 - Python, Git, operating system, and client versions;
 - the affected install, update, status, uninstall, preflight, MCP, REST, or release operation; and
 - a minimal reproduction with redacted output.

@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 
 - Project-local installation for Codex, Claude Code, and Gemini CLI.
+- Dependency-free `npx` installer with explicit `doctor`, `update`, and `uninstall` commands.
 - MCP-first workflow with a versioned REST fallback.
 - Project-scoped key validation and fresh account/project verification instructions before work and before manual verification steps.
 - Deterministic release ZIP, manifest, provenance, and SHA-256 checksums.

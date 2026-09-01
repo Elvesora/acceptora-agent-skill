@@ -4,7 +4,6 @@ import importlib.util
 import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -111,7 +110,7 @@ class Registry:
         del self.values[name]
 
 
-def write_config(root: Path, *, installed_commit: str = "a" * 40) -> None:
+def write_config(root: Path, *, installed_version: str = "1.0.0") -> None:
     config = root / ".acceptora" / "config.json"
     config.parent.mkdir()
     config.write_text(
@@ -120,7 +119,7 @@ def write_config(root: Path, *, installed_commit: str = "a" * 40) -> None:
                 "project_id": PROJECT_ID,
                 "token_env": TOKEN_ENV,
                 "origin": PROJECT_CONTEXT.ACCEPTORA_ORIGIN,
-                "installed_commit": installed_commit,
+                "installed_version": installed_version,
             }
         ),
         encoding="utf-8",
@@ -165,10 +164,10 @@ class ProjectContextTest(unittest.TestCase):
         opener = Opener(project_payload(1), project_payload(2))
         update = {
             "status": "current",
-            "repository": PROJECT_CONTEXT.REPOSITORY_URL,
-            "branch": "main",
-            "installed_commit": "a" * 40,
-            "main_commit": "a" * 40,
+            "package": "acceptora-agent-skill",
+            "registry": "https://registry.npmjs.org",
+            "installed_version": "1.0.0",
+            "latest_version": "1.0.0",
             "auto_apply": False,
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -181,7 +180,7 @@ class ProjectContextTest(unittest.TestCase):
                     clear=False,
                 ),
                 patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
-                patch.object(PROJECT_CONTEXT, "_github_update_status", return_value=update) as check,
+                patch.object(PROJECT_CONTEXT, "_npm_update_status", return_value=update) as check,
             ):
                 first = run_main(["preflight", "--project-root", str(root)])
                 second = run_main(["preflight", "--project-root", str(root)])
@@ -206,7 +205,7 @@ class ProjectContextTest(unittest.TestCase):
                 patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
                 patch.object(
                     PROJECT_CONTEXT,
-                    "_github_update_status",
+                    "_npm_update_status",
                     side_effect=PROJECT_CONTEXT.ProjectContextError("The update check is unavailable."),
                 ),
             ):
@@ -297,41 +296,16 @@ class ProjectContextTest(unittest.TestCase):
             PROJECT_CONTEXT._request_project(TOKEN, opener=RedirectOpener())
         self.assertIsNone(PROJECT_CONTEXT._NoRedirect().redirect_request(None, None, 302, "", {}, "https://example.test"))
 
-    def test_update_check_is_read_only_and_strips_credentials_from_git(self) -> None:
-        main_commit = "b" * 40
-        completed = subprocess.CompletedProcess(
-            ["git"],
-            0,
-            stdout=f"{main_commit}\trefs/heads/main\n".encode("ascii"),
-            stderr=b"",
-        )
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    TOKEN_ENV: TOKEN,
-                    "ACCEPTORA_AGENT_TOKEN": "legacy-secret",
-                    "GIT_ASKPASS": "must-not-run",
-                    "GIT_CONFIG_COUNT": "1",
-                    "SSH_ASKPASS": "must-not-run",
-                },
-                clear=False,
-            ),
-            patch.object(PROJECT_CONTEXT.shutil, "which", return_value=sys.executable),
-            patch.object(PROJECT_CONTEXT.subprocess, "run", return_value=completed) as run,
-        ):
-            result = PROJECT_CONTEXT._github_update_status("a" * 40)
+    def test_update_check_reads_only_the_latest_npm_package_version(self) -> None:
+        opener = Opener({"version": "1.1.0"})
+        result = PROJECT_CONTEXT._npm_update_status("1.0.0", opener=opener)
 
         self.assertEqual("update_available", result["status"])
         self.assertFalse(result["auto_apply"])
-        command = run.call_args.args[0]
-        self.assertIn("ls-remote", command)
-        self.assertNotIn("fetch", command)
-        environment = run.call_args.kwargs["env"]
-        self.assertNotIn(TOKEN_ENV, environment)
-        self.assertNotIn("ACCEPTORA_AGENT_TOKEN", environment)
-        self.assertNotIn("GIT_CONFIG_COUNT", environment)
-        self.assertEqual("0", environment["GIT_TERMINAL_PROMPT"])
+        self.assertEqual("1.0.0", result["installed_version"])
+        self.assertEqual("1.1.0", result["latest_version"])
+        self.assertEqual(PROJECT_CONTEXT.NPM_PACKAGE_URL, opener.requests[0].full_url)
+        self.assertIsNone(opener.requests[0].get_header("Authorization"))
 
     def test_store_windows_validates_before_persisting_only_the_derived_name(self) -> None:
         opener = Opener(project_payload())

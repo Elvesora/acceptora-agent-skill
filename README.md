@@ -6,9 +6,9 @@ Acceptora connects a coding agent to a project-scoped manual-verification workfl
 
 ## What it does
 
-- installs from canonical GitHub `main` into one project and one supported client;
+- installs the packaged skill into one project and one supported client;
 - validates and isolates each project's key;
-- checks GitHub for skill updates during the project preflight;
+- checks the published npm version for skill updates during the project preflight;
 - rereads account and project instructions before work and before drafting manual verification steps; and
 - uses MCP first, with the equivalent versioned REST API as fallback.
 
@@ -16,27 +16,27 @@ It does not install application dependencies, add an Acceptora SDK to the target
 
 ## Install
 
-Create a project credential in Acceptora, open the target Git worktree in your client, and paste its one-line prompt:
+Create a project credential in Acceptora, open a terminal at the target Git worktree root, and run one command:
 
 **Codex**
 
 ```text
-Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-CODEX.md and follow it.
+npx --yes acceptora-agent-skill install --client codex
 ```
 
 **Claude Code**
 
 ```text
-Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-CLAUDE-CODE.md and follow it.
+npx --yes acceptora-agent-skill install --client claude-code
 ```
 
 **Gemini CLI**
 
 ```text
-Open https://raw.githubusercontent.com/Elvesora/acceptora-agent-skill/main/SETUP-GEMINI-CLI.md and follow it.
+npx --yes acceptora-agent-skill install --client gemini-cli
 ```
 
-The client setup files intentionally contain one instruction line. The shared, maintained procedure is [SETUP.md](SETUP.md).
+The installer asks for the project key immediately when no project-scoped variable is available, validates it with Acceptora before writing, and never includes the secret in the command.
 
 ## Project isolation
 
@@ -55,6 +55,7 @@ Tokens are never written to Acceptora config or MCP config. Different projects k
 The installer writes only project-local state:
 
 - `.acceptora/config.json`;
+- `.acceptora/install-manifest.json` with installer ownership hashes;
 - `.agents/skills/acceptora`, `.claude/skills/acceptora`, or `.gemini/skills/acceptora`;
 - one managed client-instruction line; and
 - `.codex/config.toml`, `.mcp.json`, or `.gemini/settings.json` for the project-native MCP connection.
@@ -75,21 +76,17 @@ The agent fetches the effective instructions before work and fetches them again 
 
 The project MCP endpoint is `https://www.acceptora.com/mcp`. REST exposes the same workflow operations and a live OpenAPI document, so any language can integrate without this skill. See [API and MCP](references/api-mcp.md).
 
-## Replacing a legacy installation
-
-Do not overwrite an existing hook/runtime installation. First use that installation's own trusted rollback procedure and obtain its required rollback-digest approval. Then install the current skill from a fresh canonical `main` checkout.
-
 ## Package map
 
 - [SKILL.md](SKILL.md): agent workflow and acceptance boundary
-- [SETUP.md](SETUP.md): installation and credential procedure
-- `scripts/install.py`: project-local install, update, status, and uninstall
+- [SETUP.md](SETUP.md): concise installation and credential behavior
+- `cli/acceptora-agent-skill.mjs`: project-local install, update, doctor, and uninstall
 - `scripts/project_context.py`: key validation, fresh instructions, and update preflight
 - [references/api-mcp.md](references/api-mcp.md): transport and operation summary
 
 ## Validate the skill
 
-Use the Codex skill quick validator against the repository root. Functional behavior is covered by executable tests; documentation wording is not a test contract.
+Run `npm test` and the Codex skill quick validator against the repository root. Functional behavior is covered by executable tests; documentation wording is not a test contract.
 
 ## Support
 

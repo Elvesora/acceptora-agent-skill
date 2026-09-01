@@ -9,11 +9,8 @@ import getpass
 import json
 import os
 import re
-import shutil
 import ssl
-import subprocess
 import sys
-import tempfile
 import warnings
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -23,13 +20,12 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 
 ACCEPTORA_ORIGIN = "https://www.acceptora.com"
 PROJECT_URL = f"{ACCEPTORA_ORIGIN}/api/v1/integrations/project"
-REPOSITORY_URL = "https://github.com/Elvesora/acceptora-agent-skill"
-PRODUCTION_BRANCH = "main"
+NPM_PACKAGE_URL = "https://registry.npmjs.org/acceptora-agent-skill/latest"
 CONFIG_RELATIVE_PATH = Path(".acceptora/config.json")
 TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_PROJ_"
 TOKEN_PATTERN = re.compile(r"^avt_(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})_[A-Za-z0-9]{48}$")
 PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
-COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 REQUIRED_SCOPES = {
     "projects:read",
@@ -50,7 +46,6 @@ MAX_RESPONSE_BYTES = 1_048_576
 MAX_CONFIG_BYTES = 4_096
 MAX_INSTRUCTION_CHARACTERS = 12_000
 MAX_REVISION = 9_223_372_036_854_775_807
-MAX_GIT_OUTPUT_BYTES = 1_024
 
 
 class ProjectContextError(RuntimeError):
@@ -239,7 +234,7 @@ def _load_config(project_root: Path) -> dict[str, str]:
         config = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ProjectContextError("The project Acceptora config is invalid.") from None
-    expected_fields = {"project_id", "token_env", "origin", "installed_commit"}
+    expected_fields = {"project_id", "token_env", "origin", "installed_version"}
     if not isinstance(config, dict) or set(config) != expected_fields:
         raise ProjectContextError("The project Acceptora config is invalid.")
     project_id = config.get("project_id")
@@ -249,8 +244,8 @@ def _load_config(project_root: Path) -> dict[str, str]:
         raise ProjectContextError("The project Acceptora config is invalid.")
     if config.get("origin") != ACCEPTORA_ORIGIN:
         raise ProjectContextError("The project Acceptora config is invalid.")
-    installed_commit = config.get("installed_commit")
-    if not isinstance(installed_commit, str) or COMMIT_PATTERN.fullmatch(installed_commit) is None:
+    installed_version = config.get("installed_version")
+    if not isinstance(installed_version, str) or VERSION_PATTERN.fullmatch(installed_version) is None:
         raise ProjectContextError("The project Acceptora config is invalid.")
     return config
 
@@ -319,85 +314,38 @@ def _store_current_user_environment(name: str, token: str) -> bool:
     return _broadcast_windows_environment_change()
 
 
-def _git_environment(work_directory: Path) -> dict[str, str]:
-    environment: dict[str, str] = {}
-    for key, value in os.environ.items():
-        normalized = key.upper()
-        if normalized == "ACCEPTORA_AGENT_TOKEN" or normalized.startswith(
-            ("ACCEPTORA_AGENT_TOKEN_", "GIT_")
-        ):
-            continue
-        if normalized in {"SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"}:
-            continue
-        environment[key] = value
-    environment.update(
-        {
-            "GIT_ASKPASS": "",
-            "SSH_ASKPASS": "",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_NO_REPLACE_OBJECTS": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GCM_INTERACTIVE": "Never",
-            "GIT_CEILING_DIRECTORIES": str(work_directory.resolve()),
-        }
+def _npm_update_status(installed_version: str, *, opener: Any | None = None) -> dict[str, object]:
+    request = Request(
+        NPM_PACKAGE_URL,
+        headers={"Accept": "application/json", "User-Agent": "Acceptora-Agent-Skill"},
+        method="GET",
     )
-    return environment
-
-
-def _github_update_status(installed_commit: str) -> dict[str, object]:
-    git = shutil.which("git")
-    if git is None:
-        raise ProjectContextError("Git is required to check Acceptora skill updates.")
-    with tempfile.TemporaryDirectory(prefix="acceptora-update-") as temporary:
-        work_directory = Path(temporary)
-        command = [
-            str(Path(git).resolve()),
-            "-c",
-            "credential.helper=",
-            "-c",
-            "core.askPass=",
-            "-c",
-            "http.followRedirects=false",
-            "ls-remote",
-            "--exit-code",
-            "--heads",
-            REPOSITORY_URL,
-            f"refs/heads/{PRODUCTION_BRANCH}",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=work_directory,
-                env=_git_environment(work_directory),
-                input=b"",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            raise ProjectContextError("The Acceptora skill update check is unavailable.") from None
-    if (
-        completed.returncode != 0
-        or len(completed.stdout) > MAX_GIT_OUTPUT_BYTES
-        or len(completed.stderr) > MAX_GIT_OUTPUT_BYTES
-    ):
-        raise ProjectContextError("The Acceptora skill update check is unavailable.")
     try:
-        output = completed.stdout.decode("ascii")
-    except UnicodeDecodeError:
-        raise ProjectContextError("The Acceptora skill update response is invalid.") from None
-    match = re.fullmatch(r"([0-9a-f]{40})\trefs/heads/main\r?\n", output)
-    if match is None:
+        response = (opener or _project_opener()).open(request, timeout=15)
+        try:
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+        finally:
+            response.close()
+    except HTTPError as error:
+        error.close()
+        raise ProjectContextError("The Acceptora skill update check is unavailable.") from None
+    except (OSError, URLError):
+        raise ProjectContextError("The Acceptora skill update check is unavailable.") from None
+    if len(body) > MAX_RESPONSE_BYTES:
         raise ProjectContextError("The Acceptora skill update response is invalid.")
-    main_commit = match.group(1)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ProjectContextError("The Acceptora skill update response is invalid.") from None
+    latest_version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(latest_version, str) or VERSION_PATTERN.fullmatch(latest_version) is None:
+        raise ProjectContextError("The Acceptora skill update response is invalid.")
     return {
-        "status": "current" if main_commit == installed_commit else "update_available",
-        "repository": REPOSITORY_URL,
-        "branch": PRODUCTION_BRANCH,
-        "installed_commit": installed_commit,
-        "main_commit": main_commit,
+        "status": "current" if latest_version == installed_version else "update_available",
+        "package": "acceptora-agent-skill",
+        "registry": "https://registry.npmjs.org",
+        "installed_version": installed_version,
+        "latest_version": latest_version,
         "auto_apply": False,
     }
 
@@ -443,13 +391,13 @@ def _preflight_command(project_root: Path) -> dict[str, object]:
         raise ProjectContextError("The project environment key does not match the configured Acceptora project.")
     scopes, instructions = _validate_project(_request_project(token), config["project_id"])
     try:
-        update = _github_update_status(config["installed_commit"])
+        update = _npm_update_status(config["installed_version"])
     except ProjectContextError as error:
         update = {
             "status": "unavailable",
-            "repository": REPOSITORY_URL,
-            "branch": PRODUCTION_BRANCH,
-            "installed_commit": config["installed_commit"],
+            "package": "acceptora-agent-skill",
+            "registry": "https://registry.npmjs.org",
+            "installed_version": config["installed_version"],
             "auto_apply": False,
             "error": str(error),
         }

@@ -2,7 +2,7 @@
 
 ## Supported source
 
-Install and update only from the canonical repository's `main` branch. A semantic version describes compatibility; it does not replace the recorded Git commit.
+Install and update only from the public `acceptora-agent-skill` npm package. The npm version is the update authority, and each project ownership manifest records the SHA-256 digest of every installed payload file. The canonical GitHub repository remains the public source for review, not an installer input.
 
 ## Report a vulnerability
 
