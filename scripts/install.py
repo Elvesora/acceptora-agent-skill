@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import importlib.util
 import json
 import os
@@ -23,6 +24,8 @@ CANONICAL_REPOSITORY = "https://github.com/Elvesora/acceptora-agent-skill"
 CANONICAL_BRANCH = "main"
 ACCEPTORA_ORIGIN = "https://www.acceptora.com"
 PROJECT_CONFIG = ".acceptora/config.json"
+PROJECT_ENV_FILE = ".acceptora-env"
+PROJECT_TOKEN_ENV = "ACCEPTORA_PROJECT_TOKEN"
 CLIENTS = {
     "codex": {
         "skill_directory": ".agents/skills/acceptora",
@@ -42,6 +45,7 @@ SKILL_PAYLOAD = (
     "SKILL.md",
     "agents/openai.yaml",
     "references/api-mcp.md",
+    "scripts/mcp-headers.mjs",
     "scripts/project_context.py",
 )
 INSTRUCTION_START = "<!-- acceptora:start -->"
@@ -55,7 +59,6 @@ MCP_END = "# acceptora-mcp:end"
 PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 TOKEN_ENV_PATTERN = re.compile(r"^ACCEPTORA_AGENT_TOKEN_PROJ_[0-9A-HJKMNP-TV-Z]{26}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-ENV_TEMPLATE_PARTS = {"default", "defaults", "dist", "example", "sample", "template"}
 
 
 class InstallError(RuntimeError):
@@ -177,30 +180,37 @@ def _source_identity() -> str:
     return commit
 
 
-def _token_env(project_id: str) -> str:
+def _legacy_token_env(project_id: str) -> str:
     if PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise InstallError("Project ID must be proj_ followed by one uppercase ULID.")
     return f"ACCEPTORA_AGENT_TOKEN_{project_id.upper()}"
 
 
-def _select_token_environment(root: Path, explicit: str | None) -> str:
+def _prompt_project_key() -> str:
+    if sys.stdin.isatty():
+        return getpass.getpass("Acceptora project key: ", stream=sys.stderr).strip()
+    sys.stderr.write("Acceptora project key: ")
+    return sys.stdin.readline().strip()
+
+
+def _selected_project_key(explicit: str | None) -> str:
     if explicit is not None:
         if TOKEN_ENV_PATTERN.fullmatch(explicit) is None:
             raise InstallError("--token-env must name one project-scoped Acceptora variable.")
-        _require_token_environment(root, explicit)
-        return explicit
-    candidates = sorted(name for name in os.environ if TOKEN_ENV_PATTERN.fullmatch(name) is not None)
+        return os.environ.get(explicit) or _prompt_project_key()
+    candidates = sorted(
+        name for name, value in os.environ.items() if TOKEN_ENV_PATTERN.fullmatch(name) is not None and value
+    )
     if not candidates:
-        _require_token_environment(root, None)
-        raise AssertionError("missing credential preflight must stop")
+        return _prompt_project_key()
     if len(candidates) > 1:
         raise InstallError(
             "Multiple project-scoped Acceptora variables are available; select the intended project with --token-env."
         )
-    return candidates[0]
+    return os.environ[candidates[0]]
 
 
-def _validate_selected_key(token_env: str) -> str:
+def _validate_project_key(token: str) -> str:
     helper_path = _source_file("scripts/project_context.py")
     spec = importlib.util.spec_from_file_location("acceptora_installer_project_context", helper_path)
     if spec is None or spec.loader is None:
@@ -208,12 +218,9 @@ def _validate_selected_key(token_env: str) -> str:
     helper = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(helper)
-        token = os.environ[token_env]
         helper._validate_token(token)
         payload = helper._request_project(token)
-        project_id, derived_token_env = helper._project_identity(payload)
-        if derived_token_env != token_env:
-            raise InstallError("The selected project key does not match --token-env.")
+        project_id, _ = helper._project_identity(payload)
         helper._validate_project(payload, project_id)
     except InstallError:
         raise
@@ -222,63 +229,35 @@ def _validate_selected_key(token_env: str) -> str:
     return project_id
 
 
-def _is_environment_filename(name: str) -> bool:
-    normalized = name.casefold()
-    parts = {part for part in re.split(r"[._-]+", normalized) if part}
-    if parts & ENV_TEMPLATE_PARTS:
-        return False
-    return (
-        normalized in {".env", ".envrc", ".dev.vars"}
-        or normalized.startswith(".env.")
-        or normalized.startswith(".dev.vars.")
-        or normalized.endswith(".env")
-    )
-
-
-def _require_token_environment(root: Path, token_env: str | None) -> None:
-    if token_env is not None and token_env in os.environ:
-        return
-
-    variable = token_env or "an ACCEPTORA_AGENT_TOKEN_PROJ_<ULID> variable"
-
-    candidates: list[Path] = []
-    try:
-        entries = sorted(root.iterdir(), key=lambda entry: entry.name.casefold())
-    except OSError as error:
-        raise InstallError("Project environment storage could not be inspected.") from error
-    for path in entries:
-        if not _is_environment_filename(path.name):
+def _project_key_file(root: Path) -> tuple[Path, str, str | None]:
+    path = _project_path(root, PROJECT_ENV_FILE)
+    tracked = _run_git(root, "ls-files", "--error-unmatch", "--", PROJECT_ENV_FILE, allowed=(0, 1)).returncode == 0
+    if tracked:
+        raise InstallError(f"{PROJECT_ENV_FILE} is tracked by Git; remove it from version control first.")
+    current = _read_utf8(path, "Acceptora project environment file")
+    values: list[str] = []
+    prefix = f"{PROJECT_TOKEN_ENV}="
+    for line in re.split(r"\r\n|\n|\r", current):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if _is_linklike(path) or not path.is_file():
-            raise InstallError(f"Project environment store is not a regular file: {path.name}")
-        candidates.append(path)
+        if not line.startswith(prefix):
+            raise InstallError(f"{PROJECT_ENV_FILE} contains an unsupported entry.")
+        values.append(line[len(prefix) :])
+    if len(values) > 1:
+        raise InstallError(f"{PROJECT_ENV_FILE} contains duplicate {PROJECT_TOKEN_ENV} entries.")
+    return path, current, values[0] if values else None
 
-    safe: list[str] = []
-    unsafe: list[str] = []
-    for path in candidates:
-        ignored = _run_git(root, "check-ignore", "--quiet", "--", path.name, allowed=(0, 1)).returncode == 0
-        tracked = _run_git(root, "ls-files", "--error-unmatch", "--", path.name, allowed=(0, 1)).returncode == 0
-        (safe if ignored and not tracked else unsafe).append(path.name)
-    if unsafe:
-        raise InstallError(
-            "Refusing credential storage in environment files that are not both Git-ignored and untracked: "
-            + ", ".join(unsafe)
-        )
-    if len(safe) > 1:
-        raise InstallError(
-            f"{variable} is missing. Ask the user which ignored project environment store is active: "
-            + ", ".join(safe)
-        )
-    if safe:
-        raise InstallError(
-            f"{variable} is missing. Stop installation, validate the project key with Acceptora, then ask the "
-            f"user to place its derived project variable in {safe[0]} using the project's existing environment-file format. "
-            "Restart the client through the project's environment loader before retrying."
-        )
-    raise InstallError(
-        f"{variable} is missing. Ask the user for the project key, validate it with Acceptora, and configure "
-        "the derived variable in the project's established secret-loading mechanism before retrying."
-    )
+
+def _project_key_content(current: str, token: str) -> str:
+    assignment = f"{PROJECT_TOKEN_ENV}={token}"
+    expression = re.compile(rf"^{re.escape(PROJECT_TOKEN_ENV)}=.*$", re.MULTILINE)
+    if expression.search(current):
+        return expression.sub(assignment, current)
+    if not current:
+        return assignment + "\n"
+    newline = "\r\n" if "\r\n" in current else "\n"
+    separator = "" if current.endswith(("\n", "\r")) else newline
+    return current + separator + assignment + newline
 
 
 def _managed_bounds(text: str, start_marker: str, end_marker: str, label: str) -> tuple[int, int] | None:
@@ -366,7 +345,7 @@ def _load_config(root: Path) -> dict[str, str]:
     if not all(isinstance(document[key], str) for key in required):
         raise InstallError("Acceptora project config contains an invalid value.")
     project_id = document["project_id"]
-    if document["token_env"] != _token_env(project_id):
+    if document["token_env"] not in {PROJECT_TOKEN_ENV, _legacy_token_env(project_id)}:
         raise InstallError("Acceptora project config has a mismatched credential variable.")
     if document["origin"] != ACCEPTORA_ORIGIN or COMMIT_PATTERN.fullmatch(document["installed_commit"]) is None:
         raise InstallError("Acceptora project config has an invalid origin or commit.")
@@ -382,6 +361,14 @@ def _mcp_relative(client: str) -> str:
 
 
 def _codex_mcp_block(token_env: str) -> str:
+    if token_env == PROJECT_TOKEN_ENV:
+        return (
+            f"{MCP_START}\n"
+            "[mcp_servers.acceptora]\n"
+            f'url = "{ACCEPTORA_ORIGIN}/mcp"\n'
+            "http_headers_helper = 'node \".agents/skills/acceptora/scripts/mcp-headers.mjs\"'\n"
+            f"{MCP_END}\n"
+        )
     return (
         f"{MCP_START}\n"
         "[mcp_servers.acceptora]\n"
@@ -392,6 +379,12 @@ def _codex_mcp_block(token_env: str) -> str:
 
 
 def _json_mcp_server(client: str, token_env: str) -> dict[str, Any]:
+    if client == "claude-code" and token_env == PROJECT_TOKEN_ENV:
+        return {
+            "type": "http",
+            "url": f"{ACCEPTORA_ORIGIN}/mcp",
+            "headersHelper": 'node ".claude/skills/acceptora/scripts/mcp-headers.mjs"',
+        }
     authorization = {"Authorization": f"Bearer ${{{token_env}}}"}
     if client == "claude-code":
         return {"type": "http", "url": f"{ACCEPTORA_ORIGIN}/mcp", "headers": authorization}
@@ -477,11 +470,19 @@ def _gemini_allowed_variables(document: dict[str, Any], *, create: bool) -> list
     return allowed
 
 
-def _prepare_mcp(root: Path, client: str, token_env: str, *, owned: bool) -> tuple[Path, str]:
+def _prepare_mcp(
+    root: Path,
+    client: str,
+    token_env: str,
+    *,
+    owned: bool,
+    installed_token_env: str | None = None,
+) -> tuple[Path, str]:
     path = _project_path(root, _mcp_relative(client))
     current = _read_utf8(path, "Project MCP config")
+    current_token_env = installed_token_env or token_env
     if client == "codex":
-        _parse_codex_mcp_without_managed(current, token_env, owned=owned)
+        _parse_codex_mcp_without_managed(current, current_token_env, owned=owned)
         result = _upsert_block(current, _codex_mcp_block(token_env), MCP_START, MCP_END, "Codex MCP config")
         try:
             tomllib.loads(result)
@@ -492,8 +493,9 @@ def _prepare_mcp(root: Path, client: str, token_env: str, *, owned: bool) -> tup
     document, servers = _parse_json_mcp_document(current)
     expected_server = _json_mcp_server(client, token_env)
     if owned:
-        if servers.get("acceptora") != expected_server:
+        if servers.get("acceptora") != _json_mcp_server(client, current_token_env):
             raise InstallError("Project MCP config installer-owned acceptora server has drifted.")
+        servers["acceptora"] = expected_server
     elif "acceptora" in servers:
         raise InstallError("Project MCP config already defines an unmanaged acceptora server.")
     else:
@@ -501,10 +503,12 @@ def _prepare_mcp(root: Path, client: str, token_env: str, *, owned: bool) -> tup
 
     if client == "gemini-cli":
         allowed = _gemini_allowed_variables(document, create=not owned)
-        occurrences = allowed.count(token_env)
+        occurrences = allowed.count(current_token_env)
         if owned:
             if occurrences != 1:
                 raise InstallError("Gemini MCP config installer-owned environment allowlist has drifted.")
+            if current_token_env != token_env:
+                allowed[allowed.index(current_token_env)] = token_env
         else:
             if occurrences != 0:
                 raise InstallError("Gemini MCP config already allowlists the Acceptora project variable.")
@@ -609,18 +613,23 @@ def _install(args: argparse.Namespace, *, update: bool) -> dict[str, Any]:
     root = _git_worktree_root(Path(args.target_root))
     config_path = _project_path(root, PROJECT_CONFIG)
     config = _load_config(root) if update else None
+    token_path, token_file, stored_token = _project_key_file(root)
     if update:
         assert config is not None
         project_id = config["project_id"]
-        token_env = config["token_env"]
-        _require_token_environment(root, token_env)
-        if _validate_selected_key(token_env) != project_id:
+        installed_token_env = config["token_env"]
+        token = stored_token or (
+            os.environ.get(installed_token_env) if TOKEN_ENV_PATTERN.fullmatch(installed_token_env) else None
+        ) or _prompt_project_key()
+        if _validate_project_key(token) != project_id:
             raise InstallError("The selected project key does not match the installed Acceptora project.")
     else:
         if config_path.exists():
             raise InstallError("Acceptora is already installed; use update.")
-        token_env = _select_token_environment(root, args.token_env)
-        project_id = _validate_selected_key(token_env)
+        installed_token_env = None
+        token = stored_token or _selected_project_key(args.token_env)
+        project_id = _validate_project_key(token)
+    token_env = PROJECT_TOKEN_ENV
 
     payload = _payload()
     skill_path = _project_path(root, profile["skill_directory"])
@@ -640,9 +649,16 @@ def _install(args: argparse.Namespace, *, update: bool) -> dict[str, Any]:
         INSTRUCTION_END,
         "Project instruction file",
     )
-    mcp_path, mcp_result = _prepare_mcp(root, args.client, token_env, owned=update)
+    mcp_path, mcp_result = _prepare_mcp(
+        root,
+        args.client,
+        token_env,
+        owned=update,
+        installed_token_env=installed_token_env,
+    )
 
     _replace_skill(root, profile["skill_directory"], payload, exists=update)
+    _atomic_write(token_path, _project_key_content(token_file, token))
     _atomic_write(instruction_path, instruction_result)
     _atomic_write(mcp_path, mcp_result)
     _atomic_write(
@@ -658,6 +674,7 @@ def _install(args: argparse.Namespace, *, update: bool) -> dict[str, Any]:
         "skill_directory": profile["skill_directory"],
         "instruction_file": profile["instruction_file"],
         "mcp_config": _mcp_relative(args.client),
+        "gitignore_instruction": f"Add /{PROJECT_ENV_FILE} to .gitignore before committing.",
     }
 
 
@@ -691,7 +708,11 @@ def _status(args: argparse.Namespace) -> dict[str, Any]:
         "client": args.client,
         "project_id": config["project_id"],
         "token_env": config["token_env"],
-        "token_env_present": config["token_env"] in os.environ,
+        "token_env_present": (
+            _project_key_file(root)[2] is not None
+            if config["token_env"] == PROJECT_TOKEN_ENV
+            else config["token_env"] in os.environ
+        ),
         "installed_commit": config["installed_commit"],
         "source_commit": source_commit,
         "payload_matches": payload_matches,

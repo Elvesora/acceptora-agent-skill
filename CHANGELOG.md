@@ -4,6 +4,18 @@ All notable changes to Acceptora Agent Skill are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-09-02
+
+### Changed
+
+- Store the validated project key in the current Git root's `.acceptora-env` as `ACCEPTORA_PROJECT_TOKEN`.
+- Complete installation in the same command after validating and storing a prompted key.
+
+### Security
+
+- Keep application `.env` files untouched and reject a tracked `.acceptora-env`.
+- Keep each project bound to the authenticated project returned for its own local key.
+
 ## [1.0.1] - 2026-09-01
 
 ### Fixed

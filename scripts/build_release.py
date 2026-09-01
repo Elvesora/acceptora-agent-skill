@@ -28,6 +28,7 @@ PAYLOAD_PATHS = (
     "SKILL.md",
     "agents/openai.yaml",
     "references/api-mcp.md",
+    "scripts/mcp-headers.mjs",
     "scripts/project_context.py",
     "LICENSE",
 )

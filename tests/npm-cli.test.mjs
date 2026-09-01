@@ -20,7 +20,8 @@ import { main } from '../cli/acceptora-agent-skill.mjs';
 const PROJECT_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const CREDENTIAL_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAA';
 const PROJECT_ID = `proj_${PROJECT_ULID}`;
-const TOKEN_ENV = `ACCEPTORA_AGENT_TOKEN_PROJ_${PROJECT_ULID}`;
+const TOKEN_ENV = 'ACCEPTORA_PROJECT_TOKEN';
+const TOKEN_FILE = '.acceptora-env';
 const TOKEN = `avt_${CREDENTIAL_ULID}_${'A'.repeat(48)}`;
 const SCOPES = [
   'projects:read',
@@ -111,11 +112,12 @@ function testRuntime(root, overrides = {}) {
   return {
     runtime: {
       cwd: root,
-      env: { [TOKEN_ENV]: TOKEN },
+      env: {},
       platform: 'linux',
       stdout,
       stderr,
       fetch: fakeFetch,
+      readSecret: async () => TOKEN,
       ...overrides,
     },
     stdout,
@@ -123,18 +125,22 @@ function testRuntime(root, overrides = {}) {
   };
 }
 
-function allFileText(root) {
+function allFileText(root, excluded = new Set()) {
   const values = [];
   const visit = (directory) => {
     for (const name of readdirSync(directory)) {
       const path = join(directory, name);
       const metadata = lstatSync(path);
+      const relativePath = relative(root, path);
+      if (excluded.has(relativePath)) {
+        continue;
+      }
       if (metadata.isDirectory()) {
         if (name !== '.git') {
           visit(path);
         }
       } else if (metadata.isFile()) {
-        values.push(`${relative(root, path)}\n${readFileSync(path, 'utf8')}`);
+        values.push(`${relativePath}\n${readFileSync(path, 'utf8')}`);
       }
     }
   };
@@ -142,7 +148,11 @@ function allFileText(root) {
   return values.join('\n');
 }
 
-test('install writes only the selected client surfaces and never persists the secret', async (context) => {
+function nonCredentialFileText(root) {
+  return allFileText(root, new Set([TOKEN_FILE]));
+}
+
+test('install stores the key only in the project credential file and completes for each client', async (context) => {
   const clients = {
     codex: ['.agents/skills/acceptora/SKILL.md', 'AGENTS.md', '.codex/config.toml'],
     'claude-code': ['.claude/skills/acceptora/SKILL.md', 'CLAUDE.md', '.mcp.json'],
@@ -163,18 +173,28 @@ test('install writes only the selected client surfaces and never persists the se
         const config = JSON.parse(readFileSync(join(root, '.acceptora/config.json'), 'utf8'));
         assert.equal(config.project_id, PROJECT_ID);
         assert.equal(config.token_env, TOKEN_ENV);
-        assert.equal(config.installed_version, '1.0.1');
+        assert.equal(config.installed_version, '1.0.2');
         const manifest = JSON.parse(readFileSync(join(root, '.acceptora/install-manifest.json'), 'utf8'));
         assert.equal(manifest.client, client);
-        assert.equal(manifest.package_version, '1.0.1');
-        assert.equal(Object.keys(manifest.payload).length, 4);
-        assert.doesNotMatch(`${stdout.value}${stderr.value}${allFileText(root)}`, new RegExp(TOKEN));
+        assert.equal(manifest.package_version, '1.0.2');
+        assert.equal(Object.keys(manifest.payload).length, 5);
+        assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+        assert.match(stdout.value, /Add \/\.acceptora-env to \.gitignore/);
+        assert.doesNotMatch(`${stdout.value}${stderr.value}${nonCredentialFileText(root)}`, new RegExp(TOKEN));
 
-        if (client === 'claude-code' || client === 'gemini-cli') {
+        if (client === 'codex') {
+          const mcp = readFileSync(join(root, paths[2]), 'utf8');
+          assert.match(mcp, /http_headers_helper = 'node "\.agents\/skills\/acceptora\/scripts\/mcp-headers\.mjs"'/);
+          assert.doesNotMatch(mcp, /bearer_token_env_var/);
+        }
+        if (client === 'claude-code') {
           const mcp = JSON.parse(readFileSync(join(root, paths[2]), 'utf8'));
-          assert.equal(mcp.mcpServers.acceptora.headers.Authorization, `Bearer \${${TOKEN_ENV}}`);
+          assert.equal(mcp.mcpServers.acceptora.headersHelper, 'node ".claude/skills/acceptora/scripts/mcp-headers.mjs"');
+          assert.equal(mcp.mcpServers.acceptora.headers, undefined);
         }
         if (client === 'gemini-cli') {
+          const mcp = JSON.parse(readFileSync(join(root, paths[2]), 'utf8'));
+          assert.equal(mcp.mcpServers.acceptora.headers.Authorization, `Bearer \${${TOKEN_ENV}}`);
           const settings = JSON.parse(readFileSync(join(root, '.gemini/settings.json'), 'utf8'));
           assert.deepEqual(settings.security.environmentVariableRedaction.allowed, [TOKEN_ENV]);
         }
@@ -189,25 +209,26 @@ test('interactive project key paste shows masking without echoing the secret', a
   const root = createProject();
   try {
     const stdin = new InteractiveInput();
-    const { runtime, stdout, stderr } = testRuntime(root, { env: {}, stdin });
+    const { runtime, stdout, stderr } = testRuntime(root, { env: {}, stdin, readSecret: null });
     stdout.isTTY = true;
 
     const installation = main(['install', '--client', 'codex'], runtime);
     queueMicrotask(() => stdin.emit('data', `${TOKEN}\r`));
     const status = await installation;
 
-    assert.equal(status, 2, stderr.value);
+    assert.equal(status, 0, stderr.value);
     assert.match(stdout.value, /Acceptora project key \(hidden\): /);
     assert.match(stdout.value, new RegExp(`\\*{${TOKEN.length}}`));
     assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
     assert.equal(stdin.isRaw, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('missing credential is requested before installation and a safe env file is never read or written', async () => {
-  const root = createProject({ '.gitignore': '.env\n', '.env': 'EXISTING=value\n' });
+test('missing credential creates .acceptora-env, leaves app .env untouched, and installs in the same run', async () => {
+  const root = createProject({ '.env': 'APP_SETTING=value\n' });
   try {
     const { runtime, stdout, stderr } = testRuntime(root, {
       env: {},
@@ -215,23 +236,74 @@ test('missing credential is requested before installation and a safe env file is
     });
     const status = await main(['install', '--client', 'codex'], runtime);
 
-    assert.equal(status, 2, stderr.value);
-    assert.match(stdout.value, new RegExp(TOKEN_ENV));
-    assert.match(stdout.value, /\.env/);
+    assert.equal(status, 0, stderr.value);
+    assert.match(stdout.value, /Do not run install again/);
     assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
-    assert.equal(readFileSync(join(root, '.env'), 'utf8'), 'EXISTING=value\n');
-    assert.equal(existsSync(join(root, '.acceptora')), false);
-    assert.equal(existsSync(join(root, '.agents')), false);
-    assert.equal(existsSync(join(root, 'AGENTS.md')), false);
+    assert.equal(readFileSync(join(root, '.env'), 'utf8'), 'APP_SETTING=value\n');
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+    assert.equal(existsSync(join(root, '.acceptora/config.json')), true);
+    assert.equal(existsSync(join(root, '.agents/skills/acceptora/SKILL.md')), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('tracked environment files are ignored as credential stores without blocking guidance', async () => {
-  const root = createProject({ '.env.testing': 'TRACKED=value\n' });
+test('install reuses an existing project key without prompting and preserves comments', async () => {
+  const root = createProject({ [TOKEN_FILE]: `# Acceptora project\r\n${TOKEN_ENV}=${TOKEN}\r\n` });
   try {
-    const tracked = spawnSync('git', ['-C', root, 'add', '.env.testing'], { encoding: 'utf8' });
+    let authorization = null;
+    const { runtime, stderr } = testRuntime(root, {
+      readSecret: async () => {
+        throw new Error('credential prompt was not expected');
+      },
+      fetch: (url, options) => {
+        authorization = options.headers.Authorization;
+        return fakeFetch(url, options);
+      },
+    });
+
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 0, stderr.value);
+    assert.equal(authorization, `Bearer ${TOKEN}`);
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `# Acceptora project\r\n${TOKEN_ENV}=${TOKEN}\r\n`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('installed MCP header helper reads the key from its own project root', async () => {
+  const root = createProject();
+  try {
+    const installed = testRuntime(root);
+    assert.equal(await main(['install', '--client', 'codex'], installed.runtime), 0, installed.stderr.value);
+
+    const helper = join(root, '.agents/skills/acceptora/scripts/mcp-headers.mjs');
+    const result = spawnSync(process.execPath, [helper], {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: {},
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { Authorization: `Bearer ${TOKEN}` });
+
+    writeFileSync(join(root, TOKEN_FILE), `${TOKEN_ENV}=${TOKEN}\n${TOKEN_ENV}=${TOKEN}\n`, 'utf8');
+    const rejected = spawnSync(process.execPath, [helper], {
+      cwd: tmpdir(),
+      encoding: 'utf8',
+      env: {},
+    });
+    assert.equal(rejected.status, 1);
+    assert.equal(rejected.stdout, '');
+    assert.doesNotMatch(rejected.stderr, new RegExp(TOKEN));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tracked .acceptora-env is rejected before installation writes', async () => {
+  const root = createProject({ [TOKEN_FILE]: `${TOKEN_ENV}=${TOKEN}\n` });
+  try {
+    const tracked = spawnSync('git', ['-C', root, 'add', TOKEN_FILE], { encoding: 'utf8' });
     assert.equal(tracked.status, 0, tracked.stderr);
     const { runtime, stdout, stderr } = testRuntime(root, {
       env: {},
@@ -240,9 +312,27 @@ test('tracked environment files are ignored as credential stores without blockin
     const status = await main(['install', '--client', 'codex'], runtime);
 
     assert.equal(status, 2, stderr.value);
-    assert.match(stdout.value, new RegExp(TOKEN_ENV));
-    assert.match(stdout.value, /secret loader/);
-    assert.equal(readFileSync(join(root, '.env.testing'), 'utf8'), 'TRACKED=value\n');
+    assert.match(stderr.value, /tracked by Git/);
+    assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+    assert.equal(existsSync(join(root, '.acceptora')), false);
+    assert.equal(existsSync(join(root, '.agents')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('duplicate project key entries are rejected before network or installation writes', async () => {
+  const root = createProject({ [TOKEN_FILE]: `${TOKEN_ENV}=${TOKEN}\n${TOKEN_ENV}=${TOKEN}\n` });
+  try {
+    const { runtime, stdout, stderr } = testRuntime(root, {
+      fetch: () => {
+        throw new Error('duplicate key file reached network');
+      },
+    });
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 2);
+    assert.match(stderr.value, /duplicate/);
+    assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
     assert.equal(existsSync(join(root, '.acceptora')), false);
     assert.equal(existsSync(join(root, '.agents')), false);
   } finally {
@@ -262,6 +352,7 @@ test('invalid project key fails before any project write and is not echoed', asy
 
     assert.equal(status, 2);
     assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(invalid));
+    assert.equal(existsSync(join(root, TOKEN_FILE)), false);
     assert.equal(existsSync(join(root, '.acceptora')), false);
     assert.equal(existsSync(join(root, '.agents')), false);
   } finally {
@@ -294,6 +385,66 @@ test('doctor, update, and uninstall preserve unrelated project configuration', a
   }
 });
 
+test('update migrates a 1.0.1 project variable into .acceptora-env without another install', async (context) => {
+  const legacyTokenEnv = `ACCEPTORA_AGENT_TOKEN_${PROJECT_ID.toUpperCase()}`;
+  for (const client of ['codex', 'claude-code', 'gemini-cli']) {
+    await context.test(client, async () => {
+      const root = createProject();
+      try {
+        const installed = testRuntime(root);
+        assert.equal(await main(['install', '--client', client], installed.runtime), 0, installed.stderr.value);
+
+        const configPath = join(root, '.acceptora/config.json');
+        const config = JSON.parse(readFileSync(configPath, 'utf8'));
+        config.installed_version = '1.0.1';
+        config.token_env = legacyTokenEnv;
+        writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+
+        const manifestPath = join(root, '.acceptora/install-manifest.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        manifest.package_version = '1.0.1';
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+        if (client === 'codex') {
+          writeFileSync(
+            join(root, '.codex/config.toml'),
+            `# acceptora-mcp:start\n[mcp_servers.acceptora]\nurl = "https://www.acceptora.com/mcp"\nbearer_token_env_var = "${legacyTokenEnv}"\n# acceptora-mcp:end\n`,
+            'utf8',
+          );
+        } else {
+          const mcpPath = client === 'claude-code' ? join(root, '.mcp.json') : join(root, '.gemini/settings.json');
+          const mcp = JSON.parse(readFileSync(mcpPath, 'utf8'));
+          mcp.mcpServers.acceptora = {
+            type: 'http',
+            url: 'https://www.acceptora.com/mcp',
+            headers: { Authorization: `Bearer \${${legacyTokenEnv}}` },
+          };
+          if (client === 'gemini-cli') {
+            mcp.security.environmentVariableRedaction.allowed = [legacyTokenEnv];
+          }
+          writeFileSync(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`, 'utf8');
+        }
+        rmSync(join(root, TOKEN_FILE));
+
+        const migrated = testRuntime(root, {
+          env: { [legacyTokenEnv]: TOKEN },
+          readSecret: async () => {
+            throw new Error('legacy environment credential should be reused');
+          },
+        });
+        assert.equal(await main(['update'], migrated.runtime), 0, migrated.stderr.value);
+
+        const migratedConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+        assert.equal(migratedConfig.installed_version, '1.0.2');
+        assert.equal(migratedConfig.token_env, TOKEN_ENV);
+        assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test('doctor and uninstall fail closed when an owned skill file drifts', async () => {
   const root = createProject();
   try {
@@ -311,29 +462,35 @@ test('doctor and uninstall fail closed when an owned skill file drifts', async (
   }
 });
 
-test('doctor is read-only when the installed project variable is missing', async () => {
+test('doctor is read-only when the project credential file is missing', async () => {
   const root = createProject();
   try {
     const installed = testRuntime(root);
     assert.equal(await main(['install', '--client', 'codex'], installed.runtime), 0, installed.stderr.value);
+    rmSync(join(root, TOKEN_FILE));
 
     let prompted = false;
-    let stored = false;
     const diagnosis = testRuntime(root, {
       env: {},
       readSecret: async () => {
         prompted = true;
         return TOKEN;
       },
-      storeWindows: () => {
-        stored = true;
-      },
     });
     assert.equal(await main(['doctor'], diagnosis.runtime), 2);
-    assert.match(diagnosis.stderr.value, new RegExp(TOKEN_ENV));
+    assert.match(diagnosis.stderr.value, /\.acceptora-env/);
     assert.equal(prompted, false);
-    assert.equal(stored, false);
     assert.doesNotMatch(`${diagnosis.stdout.value}${diagnosis.stderr.value}`, new RegExp(TOKEN));
+
+    const recovery = testRuntime(root, {
+      readSecret: async () => {
+        prompted = true;
+        return TOKEN;
+      },
+    });
+    assert.equal(await main(['update'], recovery.runtime), 0, recovery.stderr.value);
+    assert.equal(prompted, true);
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -376,6 +533,10 @@ test('Git inspection receives no Acceptora credential variables', async () => {
   try {
     const childEnvironments = [];
     const { runtime, stderr } = testRuntime(root, {
+      env: {
+        [TOKEN_ENV]: 'must-not-reach-git',
+        ACCEPTORA_AGENT_TOKEN: 'legacy-must-not-reach-git',
+      },
       spawnSync: (command, arguments_, options) => {
         childEnvironments.push(options.env);
         return spawnSync(command, arguments_, options);
@@ -393,61 +554,6 @@ test('Git inspection receives no Acceptora credential variables', async () => {
   }
 });
 
-test('Windows credential storage stops for restart without partial installation', async () => {
-  const root = createProject();
-  try {
-    let powershellScript = null;
-    let powershellInput = null;
-    const { runtime, stdout, stderr } = testRuntime(root, {
-      env: {},
-      platform: 'win32',
-      readSecret: async () => TOKEN,
-      askLine: async () => 'yes',
-      spawnSync: (command, arguments_, options) => {
-        if (command === 'powershell.exe') {
-          powershellScript = arguments_.at(-1);
-          powershellInput = options.input;
-          return { status: 0, stdout: '', stderr: '' };
-        }
-        return spawnSync(command, arguments_, options);
-      },
-    });
-    assert.equal(await main(['install', '--client', 'codex'], runtime), 2, stderr.value);
-    assert.equal(powershellInput, `${TOKEN_ENV}\n${TOKEN}`);
-    assert.match(powershellScript, /SendMessageTimeout/);
-    assert.match(powershellScript, /previousKind/);
-    assert.doesNotMatch(powershellScript, /catch\{\}/);
-    if (process.platform === 'win32') {
-      const parsed = spawnSync('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        '$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count -gt 0){exit 1}',
-      ], { encoding: 'utf8', input: powershellScript });
-      assert.equal(parsed.status, 0, parsed.stderr);
-    }
-    assert.match(stdout.value, /Restart the coding client/);
-    assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
-    assert.equal(existsSync(join(root, '.acceptora')), false);
-    assert.equal(existsSync(join(root, '.agents')), false);
-
-    const failed = testRuntime(root, {
-      env: {},
-      platform: 'win32',
-      readSecret: async () => TOKEN,
-      askLine: async () => 'yes',
-      spawnSync: (command, arguments_, options) => command === 'powershell.exe'
-        ? { status: 2, stdout: '', stderr: '' }
-        : spawnSync(command, arguments_, options),
-    });
-    assert.equal(await main(['install', '--client', 'codex'], failed.runtime), 2);
-    assert.match(failed.stderr.value, /did not confirm/);
-    assert.doesNotMatch(failed.stdout.value, /stored as/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test('uninstall removes files that were created only for Acceptora', async () => {
   const root = createProject();
   try {
@@ -457,6 +563,7 @@ test('uninstall removes files that were created only for Acceptora', async () =>
     assert.equal(existsSync(join(root, 'AGENTS.md')), false);
     assert.equal(existsSync(join(root, '.codex/config.toml')), false);
     assert.equal(existsSync(join(root, '.codex')), false);
+    assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -484,6 +591,7 @@ test('install restores the project when a managed file write fails', async () =>
     assert.equal(existsSync(join(root, '.agents/skills/acceptora')), false);
     assert.equal(existsSync(join(root, '.agents')), false);
     assert.equal(existsSync(join(root, '.acceptora')), false);
+    assert.equal(existsSync(join(root, TOKEN_FILE)), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -521,18 +629,17 @@ test('update and uninstall restore the complete installation when a write fails'
   }
 });
 
-test('different worktrees remain bound to different derived project variables', async () => {
+test('different worktrees keep different keys in their own .acceptora-env files', async () => {
   const secondProjectUlid = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
   const secondCredentialUlid = '01BX5ZZKBKACTAV9WEVGEMMVRX';
   const secondProjectId = `proj_${secondProjectUlid}`;
-  const secondTokenEnv = `ACCEPTORA_AGENT_TOKEN_PROJ_${secondProjectUlid}`;
   const secondToken = `avt_${secondCredentialUlid}_${'B'.repeat(48)}`;
   const first = createProject();
   const second = createProject();
   try {
     const firstRuntime = testRuntime(first).runtime;
     const secondRuntime = testRuntime(second, {
-      env: { [secondTokenEnv]: secondToken },
+      readSecret: async () => secondToken,
       fetch: (url) => String(url).endsWith('/api/v1/integrations/project')
         ? Promise.resolve(projectResponse(secondProjectId))
         : Promise.reject(new Error(`Unexpected URL: ${url}`)),
@@ -543,8 +650,10 @@ test('different worktrees remain bound to different derived project variables', 
     const firstConfig = JSON.parse(readFileSync(join(first, '.acceptora/config.json'), 'utf8'));
     const secondConfig = JSON.parse(readFileSync(join(second, '.acceptora/config.json'), 'utf8'));
     assert.equal(firstConfig.token_env, TOKEN_ENV);
-    assert.equal(secondConfig.token_env, secondTokenEnv);
+    assert.equal(secondConfig.token_env, TOKEN_ENV);
     assert.notEqual(firstConfig.project_id, secondConfig.project_id);
+    assert.equal(readFileSync(join(first, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
+    assert.equal(readFileSync(join(second, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${secondToken}\n`);
   } finally {
     rmSync(first, { recursive: true, force: true });
     rmSync(second, { recursive: true, force: true });

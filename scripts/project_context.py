@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Validate one Acceptora project key or load fresh project instructions."""
+"""Load fresh Acceptora project instructions with a project-local key."""
 
 from __future__ import annotations
 
 import argparse
-import ctypes
-import getpass
 import json
-import os
 import re
 import ssl
+import stat
 import sys
-import warnings
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
@@ -22,6 +19,8 @@ ACCEPTORA_ORIGIN = "https://www.acceptora.com"
 PROJECT_URL = f"{ACCEPTORA_ORIGIN}/api/v1/integrations/project"
 NPM_PACKAGE_URL = "https://registry.npmjs.org/acceptora-agent-skill/latest"
 CONFIG_RELATIVE_PATH = Path(".acceptora/config.json")
+TOKEN_RELATIVE_PATH = Path(".acceptora-env")
+TOKEN_ENVIRONMENT_VARIABLE = "ACCEPTORA_PROJECT_TOKEN"
 TOKEN_PATTERN = re.compile(r"^avt_(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})_[A-Za-z0-9]{48}$")
 PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
@@ -43,6 +42,7 @@ INSTRUCTION_FIELDS = (
 INSTRUCTION_SOURCES = {"default", "account", "project"}
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_CONFIG_BYTES = 4_096
+MAX_TOKEN_FILE_BYTES = 4_096
 MAX_INSTRUCTION_CHARACTERS = 12_000
 MAX_REVISION = 9_223_372_036_854_775_807
 
@@ -81,7 +81,7 @@ def _validate_token(token: str) -> None:
 def _environment_variable(project_id: str) -> str:
     if PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ProjectContextError("project_id must use the public proj_<ULID> form.")
-    return f"ACCEPTORA_AGENT_TOKEN_{project_id.upper()}"
+    return TOKEN_ENVIRONMENT_VARIABLE
 
 
 def _project_identity(payload: dict[str, Any]) -> tuple[str, str]:
@@ -89,20 +89,6 @@ def _project_identity(payload: dict[str, Any]) -> tuple[str, str]:
     if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ProjectContextError("Acceptora returned an invalid project identity.")
     return project_id, _environment_variable(project_id)
-
-
-def _read_hidden_token() -> str:
-    if sys.stdin.isatty():
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", getpass.GetPassWarning)
-                return getpass.getpass("Acceptora project key: ")
-        except getpass.GetPassWarning:
-            raise ProjectContextError("A hidden credential prompt is not available.") from None
-    value = sys.stdin.readline(256)
-    if not value or len(value) >= 256 or sys.stdin.read(1):
-        raise ProjectContextError("Read exactly one Acceptora project key from standard input.")
-    return value.removesuffix("\n").removesuffix("\r")
 
 
 def _project_opener() -> Any:
@@ -244,7 +230,7 @@ def _load_config(project_root: Path) -> dict[str, str]:
     project_id = config.get("project_id")
     if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ProjectContextError("The project Acceptora config is invalid.")
-    if config.get("token_env") != _environment_variable(project_id):
+    if config.get("token_env") != TOKEN_ENVIRONMENT_VARIABLE:
         raise ProjectContextError("The project Acceptora config is invalid.")
     if config.get("origin") != ACCEPTORA_ORIGIN:
         raise ProjectContextError("The project Acceptora config is invalid.")
@@ -254,68 +240,43 @@ def _load_config(project_root: Path) -> dict[str, str]:
     return config
 
 
-def _require_windows() -> None:
-    if os.name != "nt":
-        raise ProjectContextError("Windows current-user credential storage is unavailable.")
-
-
-def _write_windows_registry(registry: Any, name: str, token: str) -> None:
-    access = registry.KEY_QUERY_VALUE | registry.KEY_SET_VALUE
-    with registry.CreateKeyEx(registry.HKEY_CURRENT_USER, "Environment", 0, access) as key:
-        try:
-            previous = registry.QueryValueEx(key, name)
-        except FileNotFoundError:
-            previous = None
-        registry.SetValueEx(key, name, 0, registry.REG_SZ, token)
-        try:
-            persisted, value_type = registry.QueryValueEx(key, name)
-            if value_type != registry.REG_SZ or persisted != token:
-                raise OSError
-        except Exception:
-            try:
-                if previous is None:
-                    registry.DeleteValue(key, name)
-                else:
-                    registry.SetValueEx(key, name, 0, previous[1], previous[0])
-            except Exception:
-                pass
-            raise ProjectContextError("Windows did not confirm the current-user environment update.") from None
-
-
-def _broadcast_windows_environment_change() -> bool:
+def _read_project_token(project_root: Path) -> str:
+    path = project_root.resolve() / TOKEN_RELATIVE_PATH
     try:
-        send_message = ctypes.windll.user32.SendMessageTimeoutW
-        send_message.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_uint,
-            ctypes.c_size_t,
-            ctypes.c_wchar_p,
-            ctypes.c_uint,
-            ctypes.c_uint,
-            ctypes.POINTER(ctypes.c_size_t),
-        ]
-        send_message.restype = ctypes.c_size_t
-        result = ctypes.c_size_t()
-        sent = send_message(
-            0xFFFF,
-            0x001A,
-            0,
-            ctypes.c_wchar_p("Environment"),
-            0x0002,
-            5_000,
-            ctypes.byref(result),
-        )
-        return bool(sent)
-    except Exception:
-        return False
+        metadata = path.lstat()
+    except OSError:
+        raise ProjectContextError("The project .acceptora-env file is unavailable.") from None
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise ProjectContextError("The project .acceptora-env file is invalid.")
+    try:
+        with path.open("rb") as token_file:
+            raw = token_file.read(MAX_TOKEN_FILE_BYTES + 1)
+    except OSError:
+        raise ProjectContextError("The project .acceptora-env file is unavailable.") from None
+    if len(raw) > MAX_TOKEN_FILE_BYTES:
+        raise ProjectContextError("The project .acceptora-env file is invalid.")
+    try:
+        document = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProjectContextError("The project .acceptora-env file is invalid.") from None
+    if "\0" in document:
+        raise ProjectContextError("The project .acceptora-env file is invalid.")
 
-
-def _store_current_user_environment(name: str, token: str) -> bool:
-    _require_windows()
-    import winreg
-
-    _write_windows_registry(winreg, name, token)
-    return _broadcast_windows_environment_change()
+    prefix = f"{TOKEN_ENVIRONMENT_VARIABLE}="
+    values: list[str] = []
+    for line in document.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line.startswith(prefix):
+            raise ProjectContextError("The project .acceptora-env file is invalid.")
+        values.append(line.removeprefix(prefix))
+    if not values:
+        raise ProjectContextError(f"{TOKEN_ENVIRONMENT_VARIABLE} is missing from the project .acceptora-env file.")
+    if len(values) != 1:
+        raise ProjectContextError(f"{TOKEN_ENVIRONMENT_VARIABLE} is duplicated in the project .acceptora-env file.")
+    _validate_token(values[0])
+    return values[0]
 
 
 def _npm_update_status(installed_version: str, *, opener: Any | None = None) -> dict[str, object]:
@@ -354,47 +315,10 @@ def _npm_update_status(installed_version: str, *, opener: Any | None = None) -> 
     }
 
 
-def _validate_command() -> dict[str, object]:
-    token = _read_hidden_token()
-    _validate_token(token)
-    payload = _request_project(token)
-    project_id, token_env = _project_identity(payload)
-    scopes, _ = _validate_project(payload, project_id)
-    return {
-        "status": "validated",
-        "project_id": project_id,
-        "environment_variable": token_env,
-        "granted_scopes": scopes,
-        "persistence_performed": False,
-    }
-
-
-def _store_windows_command() -> dict[str, object]:
-    _require_windows()
-    token = _read_hidden_token()
-    _validate_token(token)
-    payload = _request_project(token)
-    project_id, token_env = _project_identity(payload)
-    scopes, _ = _validate_project(payload, project_id)
-    broadcast_sent = _store_current_user_environment(token_env, token)
-    return {
-        "status": "stored",
-        "project_id": project_id,
-        "environment_variable": token_env,
-        "granted_scopes": scopes,
-        "scope": "windows_current_user",
-        "restart_required": True,
-        "environment_change_broadcast": broadcast_sent,
-    }
-
-
 def _preflight_command(project_root: Path) -> dict[str, object]:
     config = _load_config(project_root)
     token_env = config["token_env"]
-    token = os.environ.get(token_env)
-    if token is None:
-        raise ProjectContextError(f"The required project environment variable {token_env} is missing.")
-    _validate_token(token)
+    token = _read_project_token(project_root)
     scopes, instructions = _validate_project(_request_project(token), config["project_id"])
     try:
         update = _npm_update_status(config["installed_version"])
@@ -420,8 +344,6 @@ def _preflight_command(project_root: Path) -> dict[str, object]:
 def _parser() -> argparse.ArgumentParser:
     parser = _SafeArgumentParser(description="Load one project-scoped Acceptora context.")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_SafeArgumentParser)
-    commands.add_parser("validate", add_help=True)
-    commands.add_parser("store-windows", add_help=True)
     preflight = commands.add_parser("preflight", add_help=True)
     preflight.add_argument("--project-root", type=Path, default=Path.cwd())
     return parser
@@ -430,12 +352,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
-        if arguments.command == "validate":
-            result = _validate_command()
-        elif arguments.command == "store-windows":
-            result = _store_windows_command()
-        else:
-            result = _preflight_command(arguments.project_root)
+        result = _preflight_command(arguments.project_root)
     except ProjectContextError as error:
         print(_compact_json({"status": "error", "error": str(error)}), file=sys.stderr)
         return 2

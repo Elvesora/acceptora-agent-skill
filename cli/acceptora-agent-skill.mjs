@@ -14,7 +14,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createInterface } from 'node:readline/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -26,8 +25,10 @@ const ACCEPTORA_ORIGIN = 'https://www.acceptora.com';
 const PROJECT_URL = `${ACCEPTORA_ORIGIN}/api/v1/integrations/project`;
 const CONFIG_PATH = '.acceptora/config.json';
 const INSTALL_MANIFEST_PATH = '.acceptora/install-manifest.json';
+const PROJECT_ENV_PATH = '.acceptora-env';
+const PROJECT_TOKEN_ENV = 'ACCEPTORA_PROJECT_TOKEN';
 const TOKEN_PATTERN = /^avt_(?<ulid>[0-9A-HJKMNP-TV-Z]{26})_[A-Za-z0-9]{48}$/;
-const TOKEN_ENV_PATTERN = /^ACCEPTORA_AGENT_TOKEN_PROJ_[0-9A-HJKMNP-TV-Z]{26}$/;
+const LEGACY_TOKEN_ENV_PATTERN = /^ACCEPTORA_AGENT_TOKEN_PROJ_[0-9A-HJKMNP-TV-Z]{26}$/;
 const PROJECT_ID_PATTERN = /^proj_[0-9A-HJKMNP-TV-Z]{26}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -64,6 +65,7 @@ const SKILL_PAYLOAD = [
   'SKILL.md',
   'agents/openai.yaml',
   'references/api-mcp.md',
+  'scripts/mcp-headers.mjs',
   'scripts/project_context.py',
 ];
 const INSTRUCTION_START = '<!-- acceptora:start -->';
@@ -71,7 +73,6 @@ const INSTRUCTION_END = '<!-- acceptora:end -->';
 const PROJECT_INSTRUCTION = `${INSTRUCTION_START} Before implementation work or manual-verification changes, use the project-local Acceptora skill. It fetches fresh project instructions and synchronizes verification after eligible changes. ${INSTRUCTION_END}`;
 const MCP_START = '# acceptora-mcp:start';
 const MCP_END = '# acceptora-mcp:end';
-const ENV_TEMPLATE_PARTS = new Set(['default', 'defaults', 'dist', 'example', 'sample', 'template']);
 const INSTRUCTION_FIELDS = ['analysis_guidance', 'manual_verification_guidance', 'test_data_guidance'];
 const INSTRUCTION_SOURCES = new Set(['default', 'account', 'project']);
 const MAX_RESPONSE_BYTES = 1_048_576;
@@ -80,8 +81,6 @@ const MAX_INSTRUCTION_CHARACTERS = 12_000;
 export class CliError extends Error {}
 
 class CancelledError extends Error {}
-
-class SetupIncompleteError extends Error {}
 
 function writeLine(stream, message = '') {
   stream.write(`${message}\n`);
@@ -98,8 +97,6 @@ function runtimeWith(overrides) {
     fetch: globalThis.fetch,
     spawnSync,
     readSecret: null,
-    askLine: null,
-    storeWindows: null,
     atomicWrite: null,
     ...overrides,
   };
@@ -115,10 +112,10 @@ function parseArguments(argv) {
     throw new CliError('Unknown command. Run with --help to see supported commands.');
   }
 
-  const options = { command, client: null, projectRoot: null, tokenEnv: null };
+  const options = { command, client: null, projectRoot: null };
   while (values.length > 0) {
     const flag = values.shift();
-    if (!['--client', '--project-root', '--token-env'].includes(flag)) {
+    if (!['--client', '--project-root'].includes(flag)) {
       throw new CliError('Unknown option. Run with --help to see supported options.');
     }
     const value = values.shift();
@@ -129,15 +126,10 @@ function parseArguments(argv) {
       options.client = value;
     } else if (flag === '--project-root') {
       options.projectRoot = value;
-    } else {
-      options.tokenEnv = value;
     }
   }
   if (options.client !== null && CLIENTS[options.client] === undefined) {
     throw new CliError('Unsupported coding client.');
-  }
-  if (options.tokenEnv !== null && !TOKEN_ENV_PATTERN.test(options.tokenEnv)) {
-    throw new CliError('--token-env must name one project-scoped Acceptora variable.');
   }
   return options;
 }
@@ -155,7 +147,9 @@ function printHelp(runtime) {
 function secretFreeEnvironment(runtime) {
   return Object.fromEntries(Object.entries(runtime.env).filter(([name]) => {
     const normalized = name.toUpperCase();
-    return normalized !== 'ACCEPTORA_AGENT_TOKEN' && !normalized.startsWith('ACCEPTORA_AGENT_TOKEN_');
+    return normalized !== PROJECT_TOKEN_ENV
+      && normalized !== 'ACCEPTORA_AGENT_TOKEN'
+      && !normalized.startsWith('ACCEPTORA_AGENT_TOKEN_');
   }));
 }
 
@@ -326,7 +320,7 @@ function projectIdentity(projectId) {
   }
   return {
     projectId,
-    tokenEnv: `ACCEPTORA_AGENT_TOKEN_${projectId.toUpperCase()}`,
+    tokenEnv: PROJECT_TOKEN_ENV,
   };
 }
 
@@ -496,134 +490,70 @@ async function hiddenPrompt(runtime) {
   });
 }
 
-async function linePrompt(runtime, question) {
-  if (runtime.askLine !== null) {
-    return runtime.askLine(question);
+function projectCredentialFile(runtime, root) {
+  const path = safeProjectPath(root, PROJECT_ENV_PATH);
+  const tracked = runGit(runtime, root, ['ls-files', '--error-unmatch', '--', PROJECT_ENV_PATH], [0, 1]).status === 0;
+  if (tracked) {
+    throw new CliError(`${PROJECT_ENV_PATH} is tracked by Git. Remove it from version control before storing a project key.`);
   }
-  if (!runtime.stdin.isTTY || !runtime.stdout.isTTY) {
-    throw new CliError('This choice requires an interactive terminal.');
-  }
-  const interface_ = createInterface({ input: runtime.stdin, output: runtime.stdout });
-  try {
-    return await interface_.question(question);
-  } finally {
-    interface_.close();
-  }
-}
-
-async function selectNamedValue(runtime, names, question) {
-  names.forEach((name, index) => writeLine(runtime.stdout, `  ${index + 1}. ${name}`));
-  const answer = (await linePrompt(runtime, question)).trim();
-  const selected = Number.parseInt(answer, 10);
-  if (!Number.isInteger(selected) || selected < 1 || selected > names.length) {
-    throw new CliError('No valid selection was made.');
-  }
-  return names[selected - 1];
-}
-
-async function selectCredential(runtime, explicitTokenEnv = null) {
-  if (explicitTokenEnv !== null && runtime.env[explicitTokenEnv]) {
-    return { token: runtime.env[explicitTokenEnv], tokenEnv: explicitTokenEnv, fromEnvironment: true };
-  }
-  if (explicitTokenEnv !== null) {
-    const token = await hiddenPrompt(runtime);
-    return { token, tokenEnv: explicitTokenEnv, fromEnvironment: false };
-  }
-
-  const candidates = Object.keys(runtime.env).filter((name) => TOKEN_ENV_PATTERN.test(name) && runtime.env[name]);
-  candidates.sort();
-  if (candidates.length === 1) {
-    return { token: runtime.env[candidates[0]], tokenEnv: candidates[0], fromEnvironment: true };
-  }
-  if (candidates.length > 1) {
-    const selected = await selectNamedValue(runtime, candidates, 'Select the project variable to use: ');
-    return { token: runtime.env[selected], tokenEnv: selected, fromEnvironment: true };
-  }
-  const token = await hiddenPrompt(runtime);
-  return { token, tokenEnv: null, fromEnvironment: false };
-}
-
-function isEnvironmentFilename(name) {
-  const normalized = name.toLowerCase();
-  const parts = normalized.split(/[._-]+/).filter(Boolean);
-  if (parts.some((part) => ENV_TEMPLATE_PARTS.has(part))) {
-    return false;
-  }
-  return normalized === '.env'
-    || normalized === '.envrc'
-    || normalized === '.dev.vars'
-    || normalized.startsWith('.env.')
-    || normalized.startsWith('.dev.vars.')
-    || normalized.endsWith('.env');
-}
-
-function inspectEnvironmentStores(runtime, root) {
-  const candidates = readdirSync(root).filter(isEnvironmentFilename).sort();
-  const safe = [];
-  for (const name of candidates) {
-    const path = join(root, name);
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+  const current = readText(path, 'Acceptora project environment file');
+  const lines = current.split(/\r\n|\n|\r/);
+  const assignments = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim() || line.trimStart().startsWith('#')) {
       continue;
     }
-    const ignored = runGit(runtime, root, ['check-ignore', '--quiet', '--', name], [0, 1]).status === 0;
-    const tracked = runGit(runtime, root, ['ls-files', '--error-unmatch', '--', name], [0, 1]).status === 0;
-    if (ignored && !tracked) {
-      safe.push(name);
+    if (!line.startsWith(`${PROJECT_TOKEN_ENV}=`)) {
+      throw new CliError(`${PROJECT_ENV_PATH} contains an unsupported entry.`);
     }
+    assignments.push({ index, token: line.slice(PROJECT_TOKEN_ENV.length + 1) });
   }
-  return safe;
+  if (assignments.length > 1) {
+    throw new CliError(`${PROJECT_ENV_PATH} contains duplicate ${PROJECT_TOKEN_ENV} entries.`);
+  }
+  return {
+    path,
+    current,
+    token: assignments[0]?.token ?? null,
+  };
 }
 
-function storeWindowsCredential(runtime, name, token) {
-  if (runtime.storeWindows !== null) {
-    runtime.storeWindows(name, token);
-    return;
+function projectCredentialContent(current, token) {
+  const assignment = `${PROJECT_TOKEN_ENV}=${token}`;
+  if (!current) {
+    return `${assignment}\n`;
   }
-  const script = [
-    '$name=[Console]::In.ReadLine()',
-    '$value=[Console]::In.ReadToEnd()',
-    '$signature=\'[DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd,uint Msg,UIntPtr wParam,string lParam,uint flags,uint timeout,out UIntPtr result);\'',
-    'try{Add-Type -Namespace Acceptora -Name NativeMethods -MemberDefinition $signature}catch{exit 3}',
-    '$key=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")',
-    '$previous=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)',
-    '$hadPrevious=$null -ne $previous',
-    '$previousKind=if($hadPrevious){$key.GetValueKind($name)}else{$null}',
-    'try{$key.SetValue($name,$value,[Microsoft.Win32.RegistryValueKind]::String);if($key.GetValue($name)-ne $value){throw "write"};$broadcast=[UIntPtr]::Zero;$sent=[Acceptora.NativeMethods]::SendMessageTimeout([IntPtr]0xffff,0x001A,[UIntPtr]::Zero,"Environment",0x0002,5000,[ref]$broadcast);if($sent -eq [IntPtr]::Zero){throw "broadcast"}}catch{if($hadPrevious){$key.SetValue($name,$previous,$previousKind)}else{$key.DeleteValue($name,$false)};exit 2}finally{$key.Dispose()}',
-  ].join(';');
-  const result = runtime.spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    encoding: 'utf8',
-    env: secretFreeEnvironment(runtime),
-    input: `${name}\n${token}`,
-    timeout: 20_000,
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    throw new CliError('Windows did not confirm the current-user environment update.');
+  const expression = new RegExp(`^${PROJECT_TOKEN_ENV}=.*$`, 'm');
+  if (expression.test(current)) {
+    return current.replace(expression, assignment);
   }
+  const newline = current.includes('\r\n') ? '\r\n' : '\n';
+  const separator = current.endsWith('\n') || current.endsWith('\r') ? '' : newline;
+  return `${current}${separator}${assignment}${newline}`;
 }
 
-async function persistPromptedCredential(runtime, root, identity, token) {
-  const stores = inspectEnvironmentStores(runtime, root);
-  if (stores.length > 0) {
-    const store = stores.length === 1
-      ? stores[0]
-      : await selectNamedValue(runtime, stores, 'Select the environment file this project loads: ');
-    throw new SetupIncompleteError(
-      `Project key validated for ${identity.projectId}. Add ${identity.tokenEnv} to ${store}, restart the coding client through the project's existing environment loader, then run this install command again. The installer did not read or modify the environment file.`,
-    );
-  }
+async function installCredential(runtime, root) {
+  const file = projectCredentialFile(runtime, root);
+  const token = file.token ?? await hiddenPrompt(runtime);
+  return { file, token, content: projectCredentialContent(file.current, token) };
+}
 
-  if (runtime.platform === 'win32') {
-    writeLine(runtime.stdout, 'No ignored project environment file was found. A Windows current-user environment variable is readable by other processes running as this OS user.');
-    const answer = (await linePrompt(runtime, `Store ${identity.tokenEnv} in the Windows current-user environment? [y/N] `)).trim().toLowerCase();
-    if (answer === 'y' || answer === 'yes') {
-      storeWindowsCredential(runtime, identity.tokenEnv, token);
-      throw new SetupIncompleteError(`Project key validated and stored as ${identity.tokenEnv}. Restart the coding client, then run this install command again.`);
-    }
-  }
+async function updateCredential(runtime, root, config) {
+  const file = projectCredentialFile(runtime, root);
+  const legacyToken = LEGACY_TOKEN_ENV_PATTERN.test(config.token_env) ? runtime.env[config.token_env] : null;
+  const token = file.token ?? legacyToken ?? await hiddenPrompt(runtime);
+  return { file, token, content: projectCredentialContent(file.current, token) };
+}
 
-  throw new SetupIncompleteError(`Project key validated for ${identity.projectId}. Configure ${identity.tokenEnv} through this project's secret loader, restart the coding client, then run this install command again.`);
+function doctorCredential(runtime, root, config) {
+  const file = projectCredentialFile(runtime, root);
+  const legacyToken = LEGACY_TOKEN_ENV_PATTERN.test(config.token_env) ? runtime.env[config.token_env] : null;
+  const token = file.token ?? legacyToken;
+  if (!token) {
+    throw new CliError(`${PROJECT_ENV_PATH} does not contain ${PROJECT_TOKEN_ENV}. Run update to add the project key.`);
+  }
+  return token;
 }
 
 function expectedPayload() {
@@ -833,16 +763,34 @@ function rollbackProjectMutation(root, skillMutation, snapshots, skillRoot) {
   }
 }
 
-function codexMcpBlock(tokenEnv) {
+function codexMcpBlock() {
+  return `${MCP_START}\n[mcp_servers.acceptora]\nurl = "${ACCEPTORA_ORIGIN}/mcp"\nhttp_headers_helper = 'node ".agents/skills/acceptora/scripts/mcp-headers.mjs"'\n${MCP_END}`;
+}
+
+function legacyCodexMcpBlock(tokenEnv) {
   return `${MCP_START}\n[mcp_servers.acceptora]\nurl = "${ACCEPTORA_ORIGIN}/mcp"\nbearer_token_env_var = "${tokenEnv}"\n${MCP_END}`;
 }
 
-function jsonMcpServer(client, tokenEnv) {
-  const authorization = { Authorization: `Bearer \${${tokenEnv}}` };
+function jsonMcpServer(client, tokenEnv, legacy = false) {
   if (client === 'claude-code') {
-    return { type: 'http', url: `${ACCEPTORA_ORIGIN}/mcp`, headers: authorization };
+    if (!legacy) {
+      return {
+        type: 'http',
+        url: `${ACCEPTORA_ORIGIN}/mcp`,
+        headersHelper: 'node ".claude/skills/acceptora/scripts/mcp-headers.mjs"',
+      };
+    }
+    return {
+      type: 'http',
+      url: `${ACCEPTORA_ORIGIN}/mcp`,
+      headers: { Authorization: `Bearer \${${tokenEnv}}` },
+    };
   }
-  return { type: 'http', url: `${ACCEPTORA_ORIGIN}/mcp`, headers: authorization };
+  return {
+    type: 'http',
+    url: `${ACCEPTORA_ORIGIN}/mcp`,
+    headers: { Authorization: `Bearer \${${tokenEnv}}` },
+  };
 }
 
 function parseJsonDocument(value, label) {
@@ -861,15 +809,18 @@ function parseJsonDocument(value, label) {
   return document;
 }
 
-function prepareMcp(root, client, tokenEnv, owned) {
+function prepareMcp(root, client, tokenEnv, owned, installedTokenEnv = tokenEnv) {
   const profile = CLIENTS[client];
   const path = safeProjectPath(root, profile.mcpFile);
   const current = readText(path, 'Project MCP config');
   if (client === 'codex') {
-    const expected = codexMcpBlock(tokenEnv);
+    const expected = codexMcpBlock();
     const bounds = managedBounds(current, MCP_START, MCP_END, 'Codex MCP config');
     if (owned) {
-      if (bounds === null || current.slice(bounds[0], bounds[1]) !== expected) {
+      const installed = installedTokenEnv === PROJECT_TOKEN_ENV
+        ? codexMcpBlock()
+        : legacyCodexMcpBlock(installedTokenEnv);
+      if (bounds === null || current.slice(bounds[0], bounds[1]) !== installed) {
         throw new CliError('Codex MCP config installer-owned Acceptora block has drifted.');
       }
     } else if (bounds !== null || /\[mcp_servers\.acceptora\]|mcp_servers\.acceptora\.|\bacceptora\s*=/.test(current)) {
@@ -890,9 +841,11 @@ function prepareMcp(root, client, tokenEnv, owned) {
   }
   const expected = jsonMcpServer(client, tokenEnv);
   if (owned) {
-    if (!isDeepStrictEqual(document.mcpServers.acceptora, expected)) {
+    const legacy = client === 'claude-code' && installedTokenEnv !== PROJECT_TOKEN_ENV;
+    if (!isDeepStrictEqual(document.mcpServers.acceptora, jsonMcpServer(client, installedTokenEnv, legacy))) {
       throw new CliError('Project MCP config installer-owned Acceptora server has drifted.');
     }
+    document.mcpServers.acceptora = expected;
   } else if (document.mcpServers.acceptora !== undefined) {
     throw new CliError('Project MCP config already defines an unmanaged Acceptora server.');
   } else {
@@ -907,14 +860,16 @@ function prepareMcp(root, client, tokenEnv, owned) {
     if (!Array.isArray(redaction.allowed) || redaction.allowed.some((name) => typeof name !== 'string')) {
       throw new CliError('Gemini environmentVariableRedaction.allowed must be an array of names.');
     }
-    const occurrences = redaction.allowed.filter((name) => name === tokenEnv).length;
+    const occurrences = redaction.allowed.filter((name) => name === installedTokenEnv).length;
     if (owned && occurrences !== 1) {
       throw new CliError('Gemini MCP config installer-owned environment allowlist has drifted.');
     }
     if (!owned && occurrences > 0) {
       throw new CliError('Gemini MCP config already allowlists the Acceptora project variable.');
     }
-    if (!owned) {
+    if (owned && installedTokenEnv !== tokenEnv) {
+      redaction.allowed[redaction.allowed.indexOf(installedTokenEnv)] = tokenEnv;
+    } else if (!owned) {
       redaction.allowed.push(tokenEnv);
     }
   }
@@ -926,7 +881,7 @@ function removeMcp(root, client, tokenEnv) {
   const path = safeProjectPath(root, profile.mcpFile);
   const current = readText(path, 'Project MCP config');
   if (client === 'codex') {
-    const expected = codexMcpBlock(tokenEnv);
+    const expected = tokenEnv === PROJECT_TOKEN_ENV ? codexMcpBlock() : legacyCodexMcpBlock(tokenEnv);
     const bounds = managedBounds(current, MCP_START, MCP_END, 'Codex MCP config');
     if (bounds === null || current.slice(bounds[0], bounds[1]) !== expected) {
       throw new CliError('Codex MCP config installer-owned Acceptora block has drifted.');
@@ -963,10 +918,10 @@ function removeMcp(root, client, tokenEnv) {
   return { path, content: `${JSON.stringify(document, null, 2)}\n`, empty: Object.keys(document).length === 0 };
 }
 
-function configDocument(projectId, tokenEnv) {
+function configDocument(projectId) {
   return {
     project_id: projectId,
-    token_env: tokenEnv,
+    token_env: PROJECT_TOKEN_ENV,
     origin: ACCEPTORA_ORIGIN,
     installed_version: PACKAGE_DOCUMENT.version,
   };
@@ -976,9 +931,12 @@ function loadConfig(root) {
   const path = safeProjectPath(root, CONFIG_PATH);
   const document = parseJsonDocument(readText(path, 'Acceptora project config'), 'Acceptora project config');
   const keys = Object.keys(document).sort();
+  const legacyTokenEnv = typeof document.project_id === 'string'
+    ? `ACCEPTORA_AGENT_TOKEN_${document.project_id.toUpperCase()}`
+    : null;
   if (!isDeepStrictEqual(keys, ['installed_version', 'origin', 'project_id', 'token_env'])
     || !PROJECT_ID_PATTERN.test(document.project_id)
-    || document.token_env !== `ACCEPTORA_AGENT_TOKEN_${document.project_id.toUpperCase()}`
+    || (document.token_env !== PROJECT_TOKEN_ENV && document.token_env !== legacyTokenEnv)
     || document.origin !== ACCEPTORA_ORIGIN
     || !VERSION_PATTERN.test(document.installed_version)) {
     throw new CliError('Acceptora project config is invalid.');
@@ -1009,29 +967,6 @@ function installedClient(installManifest, explicitClient) {
   return installManifest.client;
 }
 
-async function installedCredential(runtime, config, explicitTokenEnv) {
-  if (explicitTokenEnv !== null && explicitTokenEnv !== config.token_env) {
-    throw new CliError('--token-env does not match this project installation.');
-  }
-  const visible = runtime.env[config.token_env];
-  if (visible) {
-    return { token: visible, fromEnvironment: true };
-  }
-  const token = await hiddenPrompt(runtime);
-  return { token, fromEnvironment: false };
-}
-
-function visibleInstalledCredential(runtime, config, explicitTokenEnv) {
-  if (explicitTokenEnv !== null && explicitTokenEnv !== config.token_env) {
-    throw new CliError('--token-env does not match this project installation.');
-  }
-  const token = runtime.env[config.token_env];
-  if (!token) {
-    throw new CliError(`${config.token_env} is not available in this process. Restart the coding client after configuring it.`);
-  }
-  return token;
-}
-
 async function installCommand(runtime, options, root) {
   const configPath = safeProjectPath(root, CONFIG_PATH);
   const installManifestPath = safeProjectPath(root, INSTALL_MANIFEST_PATH);
@@ -1039,14 +974,8 @@ async function installCommand(runtime, options, root) {
     throw new CliError('Acceptora is already installed. Use update or doctor.');
   }
   const client = resolveClient(root, options.client, false);
-  const selected = await selectCredential(runtime, options.tokenEnv);
+  const selected = await installCredential(runtime, root);
   const identity = await validateProjectKey(runtime, selected.token);
-  if (selected.tokenEnv !== null && selected.tokenEnv !== identity.tokenEnv) {
-    throw new CliError('The selected environment variable does not match the project key.');
-  }
-  if (!selected.fromEnvironment) {
-    await persistPromptedCredential(runtime, root, identity, selected.token);
-  }
 
   const profile = CLIENTS[client];
   const payload = expectedPayload();
@@ -1062,13 +991,14 @@ async function installCommand(runtime, options, root) {
   const mcpPath = safeProjectPath(root, profile.mcpFile);
   const mcpFileExisted = existsSync(mcpPath);
   const mcp = prepareMcp(root, client, identity.tokenEnv, false);
-  const snapshots = [instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
+  const snapshots = [selected.file.path, instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
 
   const skillMutation = replaceSkill(root, profile.skillDirectory, payload, false);
   try {
+    writeProjectFile(runtime, selected.file.path, selected.content);
     writeProjectFile(runtime, instructionPath, instruction);
     writeProjectFile(runtime, mcp.path, mcp.content);
-    writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(identity.projectId, identity.tokenEnv), null, 2)}\n`);
+    writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(identity.projectId), null, 2)}\n`);
     writeProjectFile(runtime, installManifestPath, `${JSON.stringify(installManifestDocument(client, payload, {
       instruction: !instructionFileExisted,
       mcp: !mcpFileExisted,
@@ -1081,8 +1011,9 @@ async function installCommand(runtime, options, root) {
 
   writeLine(runtime.stdout, `Acceptora installed for ${profile.label}.`);
   writeLine(runtime.stdout, `Project: ${identity.projectId}`);
-  writeLine(runtime.stdout, `Credential variable: ${identity.tokenEnv}`);
-  writeLine(runtime.stdout, `Restart ${profile.label} before using the Acceptora skill.`);
+  writeLine(runtime.stdout, `Project key stored in ${PROJECT_ENV_PATH}.`);
+  writeLine(runtime.stdout, `Add /${PROJECT_ENV_PATH} to .gitignore before committing.`);
+  writeLine(runtime.stdout, `Restart ${profile.label} to load the installed skill. Do not run install again.`);
 }
 
 async function updateCommand(runtime, options, root) {
@@ -1092,13 +1023,10 @@ async function updateCommand(runtime, options, root) {
   if (config.installed_version !== installManifest.package_version) {
     throw new CliError('Acceptora config and install manifest do not match.');
   }
-  const selected = await installedCredential(runtime, config, options.tokenEnv);
+  const selected = await updateCredential(runtime, root, config);
   const identity = await validateProjectKey(runtime, selected.token);
-  if (identity.projectId !== config.project_id || identity.tokenEnv !== config.token_env) {
+  if (identity.projectId !== config.project_id) {
     throw new CliError('The project key does not match this project installation.');
-  }
-  if (!selected.fromEnvironment) {
-    await persistPromptedCredential(runtime, root, identity, selected.token);
   }
 
   const profile = CLIENTS[client];
@@ -1118,23 +1046,24 @@ async function updateCommand(runtime, options, root) {
     INSTRUCTION_END,
     'Project instruction file',
   );
-  const mcp = prepareMcp(root, client, config.token_env, true);
+  const mcp = prepareMcp(root, client, PROJECT_TOKEN_ENV, true, config.token_env);
   const configPath = safeProjectPath(root, CONFIG_PATH);
   const installManifestPath = safeProjectPath(root, INSTALL_MANIFEST_PATH);
-  const snapshots = [instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
+  const snapshots = [selected.file.path, instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
 
   const skillMutation = replaceSkill(root, profile.skillDirectory, payload, true);
   try {
+    writeProjectFile(runtime, selected.file.path, selected.content);
     writeProjectFile(runtime, instructionPath, instruction);
     writeProjectFile(runtime, mcp.path, mcp.content);
-    writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(config.project_id, config.token_env), null, 2)}\n`);
+    writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(config.project_id), null, 2)}\n`);
     writeProjectFile(runtime, installManifestPath, `${JSON.stringify(installManifestDocument(client, payload, installManifest.created_files), null, 2)}\n`);
     skillMutation.commit();
   } catch (error) {
     rollbackProjectMutation(root, skillMutation, snapshots, skillRoot);
     throw error;
   }
-  writeLine(runtime.stdout, `Acceptora updated for ${profile.label}. Restart the client before continuing.`);
+  writeLine(runtime.stdout, `Acceptora updated for ${profile.label}. Add /${PROJECT_ENV_PATH} to .gitignore before committing.`);
 }
 
 async function doctorCommand(runtime, options, root) {
@@ -1144,9 +1073,9 @@ async function doctorCommand(runtime, options, root) {
   if (config.installed_version !== installManifest.package_version) {
     throw new CliError('Acceptora config and install manifest do not match.');
   }
-  const token = visibleInstalledCredential(runtime, config, options.tokenEnv);
+  const token = doctorCredential(runtime, root, config);
   const identity = await validateProjectKey(runtime, token);
-  if (identity.projectId !== config.project_id || identity.tokenEnv !== config.token_env) {
+  if (identity.projectId !== config.project_id) {
     throw new CliError('The project key does not match this project installation.');
   }
 
@@ -1261,10 +1190,6 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
     if (error instanceof CancelledError) {
       writeLine(runtime.stderr, 'Acceptora installation cancelled.');
       return 130;
-    }
-    if (error instanceof SetupIncompleteError) {
-      writeLine(runtime.stdout, error.message);
-      return 2;
     }
     const message = error instanceof CliError ? error.message : 'Acceptora installer failed safely.';
     writeLine(runtime.stderr, `Acceptora installer failed: ${message}`);

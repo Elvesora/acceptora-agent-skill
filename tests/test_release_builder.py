@@ -18,6 +18,7 @@ PAYLOAD = {
     "SKILL.md": b"skill\n",
     "agents/openai.yaml": b"interface:\n  display_name: Acceptora\n",
     "references/api-mcp.md": b"api reference\n",
+    "scripts/mcp-headers.mjs": b"export const headers = {};\n",
     "scripts/project_context.py": b"print('context')\n",
     "LICENSE": b"license\n",
 }
@@ -154,6 +155,10 @@ class ReleaseBuilderTest(unittest.TestCase):
                 self.assertEqual(
                     PAYLOAD["scripts/project_context.py"],
                     archive.read("acceptora/scripts/project_context.py"),
+                )
+                self.assertEqual(
+                    PAYLOAD["scripts/mcp-headers.mjs"],
+                    archive.read("acceptora/scripts/mcp-headers.mjs"),
                 )
 
             checksums = {

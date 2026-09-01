@@ -36,19 +36,19 @@ npx --yes acceptora-agent-skill install --client claude-code
 npx --yes acceptora-agent-skill install --client gemini-cli
 ```
 
-The installer asks for the project key immediately when no project-scoped variable is available, validates it with Acceptora before writing, and never includes the secret in the command.
+The installer asks for the project key immediately when `.acceptora-env` does not contain one, validates it with Acceptora, stores it, and completes in the same command.
 
 ## Project isolation
 
-Every worktree is bound in `.acceptora/config.json` to one public project ID and one derived variable name:
+Every worktree stores its own key in its Git root as:
 
 ```text
-ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>
+ACCEPTORA_PROJECT_TOKEN=<project-key>
 ```
 
-The key is authenticated before storage. If the project already has an untracked, Git-ignored environment store, installation stops and asks the user to place the validated key there. The existing project loader must expose it to a restarted client. If no such store exists, Windows can use the explicit validated current-user fallback; other platforms stop until the user chooses a project-local secret-loading mechanism.
+The key is authenticated before `.acceptora-env` is created or updated. Add `/.acceptora-env` to the project's `.gitignore`. A tracked `.acceptora-env` is rejected, and the application's normal `.env` files are not read or changed.
 
-Tokens are never written to Acceptora config or MCP config. Different projects keep different variable names and bindings.
+Tokens are never copied into Acceptora config or MCP config. Codex and Claude Code use the installed project-local header helper to read the key for MCP; REST preflight reads the same file directly. Different projects can use the same variable name because each client installation resolves only its own Git root.
 
 ## Installed files
 
@@ -56,6 +56,7 @@ The installer writes only project-local state:
 
 - `.acceptora/config.json`;
 - `.acceptora/install-manifest.json` with installer ownership hashes;
+- `.acceptora-env` with the validated project key;
 - `.agents/skills/acceptora`, `.claude/skills/acceptora`, or `.gemini/skills/acceptora`;
 - one managed client-instruction line; and
 - `.codex/config.toml`, `.mcp.json`, or `.gemini/settings.json` for the project-native MCP connection.
@@ -76,12 +77,15 @@ The agent fetches the effective instructions before work and fetches them again 
 
 The project MCP endpoint is `https://www.acceptora.com/mcp`. REST exposes the same workflow operations and a live OpenAPI document, so any language can integrate without this skill. See [API and MCP](references/api-mcp.md).
 
+Codex and Claude Code can load MCP authorization through the installed header helper. Gemini CLI does not support a header helper for an arbitrary project secret file, so the skill uses REST fallback unless `ACCEPTORA_PROJECT_TOKEN` is already exposed to the Gemini process.
+
 ## Package map
 
 - [SKILL.md](SKILL.md): agent workflow and acceptance boundary
 - [SETUP.md](SETUP.md): concise installation and credential behavior
 - `cli/acceptora-agent-skill.mjs`: project-local install, update, doctor, and uninstall
-- `scripts/project_context.py`: key validation, fresh instructions, and update preflight
+- `scripts/project_context.py`: fresh instructions and update preflight
+- `scripts/mcp-headers.mjs`: project-local MCP authentication for clients with header-helper support
 - [references/api-mcp.md](references/api-mcp.md): transport and operation summary
 
 ## Validate the skill

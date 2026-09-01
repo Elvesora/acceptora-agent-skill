@@ -15,12 +15,14 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = PACKAGE_ROOT / "scripts" / "install.py"
 CANONICAL_REPOSITORY = "https://github.com/Elvesora/acceptora-agent-skill"
 PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
-TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+TOKEN_ENV = "ACCEPTORA_PROJECT_TOKEN"
+LEGACY_TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 SECRET = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAA_" + ("A" * 48)
 PAYLOAD = {
     "SKILL.md": "---\nname: acceptora\ndescription: Test skill.\n---\n\nUse Acceptora.\n",
     "agents/openai.yaml": "interface:\n  display_name: Acceptora\n",
     "references/api-mcp.md": "# API and MCP\n",
+    "scripts/mcp-headers.mjs": (PACKAGE_ROOT / "scripts/mcp-headers.mjs").read_text(encoding="utf-8"),
     "scripts/project_context.py": """#!/usr/bin/env python3
 import re
 
@@ -130,7 +132,7 @@ def installer_environment(*, with_token: bool) -> dict[str, str]:
     }
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     if with_token:
-        environment[TOKEN_ENV] = SECRET
+        environment[LEGACY_TOKEN_ENV] = SECRET
     return environment
 
 
@@ -142,6 +144,7 @@ def run_installer(
     *,
     with_token: bool = True,
     selected_token_env: str | None = None,
+    token_input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     arguments = [
         sys.executable,
@@ -162,6 +165,7 @@ def run_installer(
         text=True,
         encoding="utf-8",
         env=installer_environment(with_token=with_token),
+        input=token_input,
         check=False,
     )
 
@@ -226,9 +230,13 @@ class InstallerTest(unittest.TestCase):
                     },
                     config,
                 )
+                self.assertEqual(
+                    f"{TOKEN_ENV}={SECRET}\n",
+                    (target / ".acceptora-env").read_text(encoding="utf-8"),
+                )
                 mcp = (target / layout["mcp"]).read_text(encoding="utf-8")
-                self.assertIn(TOKEN_ENV, mcp)
                 if client == "gemini-cli":
+                    self.assertIn(TOKEN_ENV, mcp)
                     gemini = json.loads(mcp)
                     server = gemini["mcpServers"]["acceptora"]
                     self.assertEqual("http", server["type"])
@@ -238,13 +246,20 @@ class InstallerTest(unittest.TestCase):
                         [TOKEN_ENV],
                         gemini["security"]["environmentVariableRedaction"]["allowed"],
                     )
+                elif client == "codex":
+                    self.assertIn('http_headers_helper = \'node ".agents/skills/acceptora/scripts/mcp-headers.mjs"\'', mcp)
+                else:
+                    self.assertEqual(
+                        'node ".claude/skills/acceptora/scripts/mcp-headers.mjs"',
+                        json.loads(mcp)["mcpServers"]["acceptora"]["headersHelper"],
+                    )
                 created_text = instruction + mcp + json.dumps(config) + "".join(
                     path.read_text(encoding="utf-8") for path in skill_root.rglob("*") if path.is_file()
                 )
                 self.assertNotIn(SECRET, created_text)
                 self.assertFalse((target / ".verification").exists())
 
-    def test_missing_token_stops_at_safe_ignored_environment_store_without_writes(self) -> None:
+    def test_missing_token_creates_project_file_without_touching_dotenv_or_requiring_a_second_run(self) -> None:
         target = self.workspace / "target"
         build_target(target, {".gitignore": ".env\n"})
         write_text(target, ".env", "EXISTING=value\n")
@@ -255,16 +270,93 @@ class InstallerTest(unittest.TestCase):
             target,
             "codex",
             with_token=False,
-            selected_token_env=TOKEN_ENV,
+            token_input=SECRET + "\n",
         )
 
-        self.assertEqual(2, process.returncode)
-        self.assertIn(TOKEN_ENV, process.stderr)
-        self.assertIn(".env", process.stderr)
+        self.assertEqual(0, process.returncode, process.stderr)
         self.assertEqual("EXISTING=value\n", (target / ".env").read_text(encoding="utf-8"))
-        self.assertFalse((target / ".acceptora").exists())
-        self.assertFalse((target / ".agents").exists())
-        self.assertFalse((target / "AGENTS.md").exists())
+        self.assertEqual(f"{TOKEN_ENV}={SECRET}\n", (target / ".acceptora-env").read_text(encoding="utf-8"))
+        self.assertTrue((target / ".acceptora/config.json").is_file())
+        self.assertTrue((target / ".agents/skills/acceptora").is_dir())
+
+    def test_project_key_file_rejects_tracked_nonregular_symlink_and_duplicate_inputs(self) -> None:
+        tracked = self.workspace / "tracked"
+        build_target(tracked, {".acceptora-env": f"{TOKEN_ENV}={SECRET}\n"})
+        rejected = run_installer(self.source, "install", tracked, "codex")
+        self.assertEqual(2, rejected.returncode)
+        self.assertFalse((tracked / ".acceptora").exists())
+
+        nonregular = self.workspace / "nonregular"
+        build_target(nonregular)
+        (nonregular / ".acceptora-env").mkdir()
+        rejected = run_installer(self.source, "install", nonregular, "codex")
+        self.assertEqual(2, rejected.returncode)
+        self.assertFalse((nonregular / ".acceptora").exists())
+
+        duplicate = self.workspace / "duplicate"
+        build_target(duplicate)
+        write_text(duplicate, ".acceptora-env", f"{TOKEN_ENV}={SECRET}\n{TOKEN_ENV}={SECRET}\n")
+        rejected = run_installer(self.source, "install", duplicate, "codex")
+        self.assertEqual(2, rejected.returncode)
+        self.assertFalse((duplicate / ".acceptora").exists())
+
+        symlink = self.workspace / "symlink"
+        build_target(symlink)
+        outside = self.workspace / "outside-token"
+        outside.write_text(f"{TOKEN_ENV}={SECRET}\n", encoding="utf-8")
+        try:
+            (symlink / ".acceptora-env").symlink_to(outside)
+        except OSError:
+            pass
+        else:
+            rejected = run_installer(self.source, "install", symlink, "codex")
+            self.assertEqual(2, rejected.returncode)
+            self.assertFalse((symlink / ".acceptora").exists())
+
+    def test_installed_mcp_header_helper_reads_the_project_key_file(self) -> None:
+        target = self.workspace / "helper"
+        build_target(target)
+        result_json(run_installer(self.source, "install", target, "codex"))
+
+        helper = target / ".agents/skills/acceptora/scripts/mcp-headers.mjs"
+        process = subprocess.run(
+            ["node", str(helper)],
+            cwd=self.workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertEqual({"Authorization": f"Bearer {SECRET}"}, json.loads(process.stdout))
+
+    def test_update_migrates_the_legacy_project_variable_without_another_install(self) -> None:
+        target = self.workspace / "legacy"
+        build_target(target)
+        result_json(run_installer(self.source, "install", target, "codex"))
+        (target / ".acceptora-env").unlink()
+        config_path = target / ".acceptora/config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["token_env"] = LEGACY_TOKEN_ENV
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        mcp_path = target / ".codex/config.toml"
+        mcp_path.write_text(
+            mcp_path.read_text(encoding="utf-8").replace(
+                'http_headers_helper = \'node ".agents/skills/acceptora/scripts/mcp-headers.mjs"\'',
+                f'bearer_token_env_var = "{LEGACY_TOKEN_ENV}"',
+            ),
+            encoding="utf-8",
+        )
+
+        updated = result_json(run_installer(self.source, "update", target, "codex"))
+
+        self.assertEqual("updated", updated["status"])
+        migrated = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(TOKEN_ENV, migrated["token_env"])
+        self.assertEqual(f"{TOKEN_ENV}={SECRET}\n", (target / ".acceptora-env").read_text(encoding="utf-8"))
+        self.assertIn("http_headers_helper", mcp_path.read_text(encoding="utf-8"))
 
     def test_update_replaces_payload_and_status_reports_current_then_drift(self) -> None:
         target = self.workspace / "target"
@@ -373,7 +465,7 @@ class InstallerTest(unittest.TestCase):
                 mcp_path = target / layout["mcp"]
                 current = mcp_path.read_text(encoding="utf-8")
                 if client == "codex":
-                    drifted = current.replace(TOKEN_ENV, "ACCEPTORA_AGENT_TOKEN_PROJ_01BX5ZZKBKACTAV9WEVGEMMVRZ")
+                    drifted = current.replace("mcp-headers.mjs", "other-headers.mjs")
                 else:
                     document = json.loads(current)
                     document["mcpServers"]["acceptora"]["url"] = "https://example.test/drift"
@@ -460,6 +552,7 @@ class InstallerTest(unittest.TestCase):
         mcp = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))
         self.assertEqual({"url": "https://example.test"}, mcp["mcpServers"]["other"])
         self.assertNotIn("acceptora", mcp["mcpServers"])
+        self.assertEqual(f"{TOKEN_ENV}={SECRET}\n", (target / ".acceptora-env").read_text(encoding="utf-8"))
 
     def test_source_and_target_must_keep_exact_git_boundaries(self) -> None:
         target = self.workspace / "target"
@@ -478,7 +571,7 @@ class InstallerTest(unittest.TestCase):
         self.assertIn("exact Git worktree root", wrong_target.stderr)
         self.assertFalse((target / ".acceptora").exists())
 
-    def test_two_projects_keep_distinct_derived_credential_names(self) -> None:
+    def test_two_projects_keep_distinct_keys_in_their_own_project_files(self) -> None:
         second_project = "proj_01BX5ZZKBKACTAV9WEVGEMMVRZ"
         second_token_env = "ACCEPTORA_AGENT_TOKEN_PROJ_01BX5ZZKBKACTAV9WEVGEMMVRZ"
         first = self.workspace / "first"
@@ -512,8 +605,12 @@ class InstallerTest(unittest.TestCase):
         second_config = json.loads((second / ".acceptora/config.json").read_text(encoding="utf-8"))
         self.assertEqual(TOKEN_ENV, first_config["token_env"])
         self.assertEqual(second_project, second_config["project_id"])
-        self.assertEqual(second_token_env, second_config["token_env"])
-        self.assertNotEqual(first_config["token_env"], second_config["token_env"])
+        self.assertEqual(TOKEN_ENV, second_config["token_env"])
+        self.assertEqual(f"{TOKEN_ENV}={SECRET}\n", (first / ".acceptora-env").read_text(encoding="utf-8"))
+        self.assertEqual(
+            f"{TOKEN_ENV}={environment[second_token_env]}\n",
+            (second / ".acceptora-env").read_text(encoding="utf-8"),
+        )
 
     def test_multiple_project_variables_require_selection_and_invalid_key_never_writes(self) -> None:
         second_token_env = "ACCEPTORA_AGENT_TOKEN_PROJ_01BX5ZZKBKACTAV9WEVGEMMVRZ"
@@ -545,7 +642,7 @@ class InstallerTest(unittest.TestCase):
         self.assertFalse((target / ".acceptora").exists())
 
         selected = subprocess.run(
-            [*command, "--token-env", TOKEN_ENV],
+            [*command, "--token-env", LEGACY_TOKEN_ENV],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -558,9 +655,9 @@ class InstallerTest(unittest.TestCase):
         invalid_target = self.workspace / "invalid"
         build_target(invalid_target)
         invalid_environment = installer_environment(with_token=False)
-        invalid_environment[TOKEN_ENV] = "not-a-project-key"
+        invalid_environment[LEGACY_TOKEN_ENV] = "not-a-project-key"
         invalid = subprocess.run(
-            [*command[:-1], str(invalid_target), "--token-env", TOKEN_ENV],
+            [*command[:-1], str(invalid_target), "--token-env", LEGACY_TOKEN_ENV],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

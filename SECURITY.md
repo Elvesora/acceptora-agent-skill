@@ -10,12 +10,13 @@ Use the private [GitHub Security Advisory form](https://github.com/Elvesora/acce
 
 ## Current security boundary
 
-- Every worktree binds to one public project ID and its derived `ACCEPTORA_AGENT_TOKEN_PROJ_<ULID>` variable.
+- Every worktree binds its own `.acceptora-env` key to one authenticated public project ID.
 - The key is authenticated against Acceptora before installation writes project state.
-- The installer never writes a key into the repository, `.acceptora/config.json`, MCP configuration, logs, or output.
-- A possible project environment file is inspected only by filename and Git metadata; its contents are never read or written.
+- The installer writes the key only as `ACCEPTORA_PROJECT_TOKEN` in `.acceptora-env`; add `/.acceptora-env` to `.gitignore`.
+- A tracked or linked `.acceptora-env` is rejected. Application `.env` files are not read or changed.
+- The installer never copies a key into `.acceptora/config.json`, MCP configuration, logs, or user-facing output.
 - Client skills, instructions, MCP configuration, and public binding metadata are project-local. Unrelated settings are preserved.
 - Authenticated requests use the fixed HTTPS origin and refuse redirects.
 - Agents may synchronize verification material but cannot make human acceptance decisions.
 
-Environment variables are readable by code running in the same process context. A Windows current-user value can also be read by other processes running as that user. Use separate client processes and each project's existing secret loader when stronger isolation is required.
+Code running in a worktree can read that worktree's `.acceptora-env`. Keep normal repository permissions restricted and never commit or share the file.

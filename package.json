@@ -1,6 +1,6 @@
 {
   "name": "acceptora-agent-skill",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Project-local Acceptora skill and MCP installer for coding agents",
   "license": "MIT",
   "type": "module",
@@ -11,6 +11,7 @@
     "cli/",
     "agents/openai.yaml",
     "references/api-mcp.md",
+    "scripts/mcp-headers.mjs",
     "scripts/project_context.py",
     "SKILL.md",
     "LICENSE"

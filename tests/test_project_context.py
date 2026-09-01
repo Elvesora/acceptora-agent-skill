@@ -23,8 +23,10 @@ SPEC.loader.exec_module(PROJECT_CONTEXT)
 PROJECT_ULID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 CREDENTIAL_ULID = "01ARZ3NDEKTSV4RRFFQ69G5FAA"
 PROJECT_ID = f"proj_{PROJECT_ULID}"
-TOKEN_ENV = f"ACCEPTORA_AGENT_TOKEN_PROJ_{PROJECT_ULID}"
+TOKEN_ENV = "ACCEPTORA_PROJECT_TOKEN"
 TOKEN = f"avt_{CREDENTIAL_ULID}_" + ("A" * 48)
+SECOND_PROJECT_ID = "proj_01BX5ZZKBKACTAV9WEVGEMMVRZ"
+SECOND_TOKEN = "avt_01BX5ZZKBKACTAV9WEVGEMMVRX_" + ("B" * 48)
 SCOPES = sorted(PROJECT_CONTEXT.REQUIRED_SCOPES | {"exceptions:write"})
 
 
@@ -47,9 +49,9 @@ def instructions(revision: int = 1) -> dict[str, object]:
     return {**payload, "effective_digest": "sha256:" + ("a" * 64), "configured": True}
 
 
-def project_payload(revision: int = 1) -> dict[str, object]:
+def project_payload(revision: int = 1, *, project_id: str = PROJECT_ID) -> dict[str, object]:
     return {
-        "project_id": PROJECT_ID,
+        "project_id": project_id,
         "granted_scopes": SCOPES,
         "verification_instructions": instructions(revision),
     }
@@ -77,48 +79,20 @@ class Opener:
         return Response(self.payloads.pop(0))
 
 
-class RegistryKey:
-    def __enter__(self) -> "RegistryKey":
-        return self
-
-    def __exit__(self, exception_type: object, exception: object, traceback: object) -> None:
-        return None
-
-
-class Registry:
-    HKEY_CURRENT_USER = object()
-    KEY_QUERY_VALUE = 1
-    KEY_SET_VALUE = 2
-    REG_SZ = 1
-
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-        self.paths: list[str] = []
-
-    def CreateKeyEx(self, root: object, path: str, reserved: int, access: int) -> RegistryKey:
-        self.paths.append(path)
-        return RegistryKey()
-
-    def QueryValueEx(self, key: object, name: str) -> tuple[str, int]:
-        if name not in self.values:
-            raise FileNotFoundError
-        return self.values[name], self.REG_SZ
-
-    def SetValueEx(self, key: object, name: str, reserved: int, value_type: int, value: str) -> None:
-        self.values[name] = value
-
-    def DeleteValue(self, key: object, name: str) -> None:
-        del self.values[name]
-
-
-def write_config(root: Path, *, installed_version: str = "1.0.0") -> None:
+def write_config(
+    root: Path,
+    *,
+    installed_version: str = "1.0.0",
+    project_id: str = PROJECT_ID,
+    token_env: str = TOKEN_ENV,
+) -> None:
     config = root / ".acceptora" / "config.json"
     config.parent.mkdir()
     config.write_text(
         json.dumps(
             {
-                "project_id": PROJECT_ID,
-                "token_env": TOKEN_ENV,
+                "project_id": project_id,
+                "token_env": token_env,
                 "origin": PROJECT_CONTEXT.ACCEPTORA_ORIGIN,
                 "installed_version": installed_version,
             }
@@ -127,11 +101,14 @@ def write_config(root: Path, *, installed_version: str = "1.0.0") -> None:
     )
 
 
-def run_main(arguments: list[str], *, stdin: str = "") -> tuple[int, str, str]:
+def write_project_token(root: Path, token: str = TOKEN) -> None:
+    (root / ".acceptora-env").write_text(f"{TOKEN_ENV}={token}\n", encoding="utf-8")
+
+
+def run_main(arguments: list[str]) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with (
-        patch.object(sys, "stdin", io.StringIO(stdin)),
         patch.object(sys, "stdout", stdout),
         patch.object(sys, "stderr", stderr),
     ):
@@ -140,22 +117,35 @@ def run_main(arguments: list[str], *, stdin: str = "") -> tuple[int, str, str]:
 
 
 class ProjectContextTest(unittest.TestCase):
-    def test_validate_uses_hidden_stdin_and_returns_secret_free_project_identity(self) -> None:
+    def test_preflight_uses_only_the_project_acceptora_env_token(self) -> None:
         opener = Opener(project_payload())
-        with patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener):
-            status, stdout, stderr = run_main(
-                ["validate"],
-                stdin=TOKEN + "\n",
-            )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root)
+            write_project_token(root)
+            application_env = root / ".env"
+            application_env_contents = f"{TOKEN_ENV}={SECOND_TOKEN}\n"
+            application_env.write_text(application_env_contents, encoding="utf-8")
+            with (
+                patch.dict(os.environ, {TOKEN_ENV: SECOND_TOKEN}, clear=True),
+                patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
+                patch.object(
+                    PROJECT_CONTEXT,
+                    "_npm_update_status",
+                    return_value={"status": "current"},
+                ),
+            ):
+                status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
+            self.assertEqual(application_env_contents, application_env.read_text(encoding="utf-8"))
 
         self.assertEqual(0, status, stderr)
         result = json.loads(stdout)
-        self.assertEqual("validated", result["status"])
+        self.assertEqual("ready", result["status"])
         self.assertEqual(PROJECT_ID, result["project_id"])
         self.assertEqual(TOKEN_ENV, result["environment_variable"])
-        self.assertFalse(result["persistence_performed"])
         self.assertEqual(SCOPES, result["granted_scopes"])
         self.assertNotIn(TOKEN, stdout + stderr)
+        self.assertNotIn(SECOND_TOKEN, stdout + stderr)
         request = opener.requests[0]
         self.assertEqual(PROJECT_CONTEXT.PROJECT_URL, request.full_url)
         self.assertEqual("GET", request.get_method())
@@ -174,12 +164,8 @@ class ProjectContextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_config(root)
+            write_project_token(root)
             with (
-                patch.dict(
-                    os.environ,
-                    {TOKEN_ENV: TOKEN, "ACCEPTORA_AGENT_TOKEN": "legacy-must-not-be-used"},
-                    clear=False,
-                ),
                 patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
                 patch.object(PROJECT_CONTEXT, "_npm_update_status", return_value=update) as check,
             ):
@@ -201,8 +187,8 @@ class ProjectContextTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_config(root)
+            write_project_token(root)
             with (
-                patch.dict(os.environ, {TOKEN_ENV: TOKEN}, clear=True),
                 patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
                 patch.object(
                     PROJECT_CONTEXT,
@@ -222,24 +208,24 @@ class ProjectContextTest(unittest.TestCase):
         )
         self.assertNotIn(TOKEN, stdout + stderr)
 
-    def test_preflight_never_loads_a_key_from_project_env_files(self) -> None:
+    def test_preflight_does_not_fall_back_to_application_env_or_process_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_config(root)
             (root / ".env").write_text(f"{TOKEN_ENV}={TOKEN}\n", encoding="utf-8")
             with (
-                patch.dict(os.environ, {}, clear=True),
+                patch.dict(os.environ, {TOKEN_ENV: TOKEN}, clear=True),
                 patch.object(
                     PROJECT_CONTEXT,
                     "_project_opener",
-                    side_effect=AssertionError("missing process environment reached network"),
+                    side_effect=AssertionError("missing .acceptora-env reached network"),
                 ),
             ):
                 status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
         self.assertEqual(2, status)
         self.assertEqual("", stdout)
-        self.assertIn(TOKEN_ENV, stderr)
+        self.assertIn(".acceptora-env", stderr)
         self.assertNotIn(TOKEN, stderr)
 
     def test_project_identity_scopes_and_instruction_contract_are_enforced(self) -> None:
@@ -308,48 +294,91 @@ class ProjectContextTest(unittest.TestCase):
         self.assertEqual(PROJECT_CONTEXT.NPM_PACKAGE_URL, opener.requests[0].full_url)
         self.assertIsNone(opener.requests[0].get_header("Authorization"))
 
-    def test_store_windows_validates_before_persisting_only_the_derived_name(self) -> None:
-        opener = Opener(project_payload())
-        with (
-            patch.object(PROJECT_CONTEXT, "_require_windows"),
-            patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
-            patch.object(PROJECT_CONTEXT, "_store_current_user_environment", return_value=True) as store,
-        ):
-            status, stdout, stderr = run_main(
-                ["store-windows"],
-                stdin=TOKEN + "\n",
-            )
+    def test_preflight_rejects_duplicate_and_malformed_token_files_without_network(self) -> None:
+        documents = (
+            ("duplicate", f"{TOKEN_ENV}={TOKEN}\n{TOKEN_ENV}={SECOND_TOKEN}\n"),
+            ("invalid-token", f"{TOKEN_ENV}=not-a-project-key\n"),
+            ("unexpected-assignment", f"UNEXPECTED={TOKEN}\n"),
+            ("nul-byte", f"{TOKEN_ENV}={TOKEN}\0\n"),
+        )
+        for case, document in documents:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_config(root)
+                (root / ".acceptora-env").write_text(document, encoding="utf-8")
+                with patch.object(
+                    PROJECT_CONTEXT,
+                    "_project_opener",
+                    side_effect=AssertionError("invalid token file reached network"),
+                ):
+                    status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(0, status, stderr)
-        store.assert_called_once_with(TOKEN_ENV, TOKEN)
-        result = json.loads(stdout)
-        self.assertEqual("stored", result["status"])
-        self.assertTrue(result["restart_required"])
-        self.assertEqual(TOKEN_ENV, result["environment_variable"])
-        self.assertNotIn(TOKEN, stdout + stderr)
+            self.assertEqual(2, status)
+            self.assertEqual("", stdout)
+            self.assertNotIn(TOKEN, stderr)
+            self.assertNotIn(SECOND_TOKEN, stderr)
 
-    def test_windows_registry_write_uses_only_the_project_derived_name(self) -> None:
-        registry = Registry()
+    def test_preflight_rejects_non_regular_token_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root)
+            (root / ".acceptora-env").mkdir()
 
-        PROJECT_CONTEXT._write_windows_registry(registry, TOKEN_ENV, TOKEN)
+            status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(["Environment"], registry.paths)
-        self.assertEqual({TOKEN_ENV: TOKEN}, registry.values)
+        self.assertEqual(2, status)
+        self.assertEqual("", stdout)
+        self.assertIn(".acceptora-env", stderr)
 
-    def test_store_windows_fails_before_reading_stdin_on_other_platforms(self) -> None:
-        with (
-            patch.object(PROJECT_CONTEXT.os, "name", "posix"),
-            patch.object(
-                PROJECT_CONTEXT,
-                "_read_hidden_token",
-                side_effect=AssertionError("unsupported platform read stdin"),
-            ),
-        ):
-            status, stdout, stderr = run_main(["store-windows"], stdin=TOKEN + "\n")
+    def test_preflight_rejects_symlinked_token_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root)
+            write_project_token(root)
+
+            with patch.object(Path, "is_symlink", lambda path: path.name == ".acceptora-env"):
+                status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stdout)
+        self.assertIn(".acceptora-env", stderr)
+        self.assertNotIn(TOKEN, stderr)
+
+    def test_preflight_rejects_legacy_project_derived_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root, token_env=f"ACCEPTORA_AGENT_TOKEN_{PROJECT_ID.upper()}")
+            write_project_token(root)
+
+            status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
         self.assertEqual(2, status)
         self.assertEqual("", stdout)
         self.assertNotIn(TOKEN, stderr)
+
+    def test_preflight_keeps_two_project_roots_and_keys_isolated(self) -> None:
+        first_opener = Opener(project_payload())
+        second_opener = Opener(project_payload(project_id=SECOND_PROJECT_ID))
+        with tempfile.TemporaryDirectory() as first_temporary, tempfile.TemporaryDirectory() as second_temporary:
+            first_root = Path(first_temporary)
+            second_root = Path(second_temporary)
+            write_config(first_root)
+            write_project_token(first_root)
+            write_config(second_root, project_id=SECOND_PROJECT_ID)
+            write_project_token(second_root, SECOND_TOKEN)
+            with patch.object(PROJECT_CONTEXT, "_npm_update_status", return_value={"status": "current"}):
+                with patch.object(PROJECT_CONTEXT, "_project_opener", return_value=first_opener):
+                    first = run_main(["preflight", "--project-root", str(first_root)])
+                with patch.object(PROJECT_CONTEXT, "_project_opener", return_value=second_opener):
+                    second = run_main(["preflight", "--project-root", str(second_root)])
+
+        self.assertEqual(0, first[0], first[2])
+        self.assertEqual(0, second[0], second[2])
+        self.assertEqual(f"Bearer {TOKEN}", first_opener.requests[0].get_header("Authorization"))
+        self.assertEqual(f"Bearer {SECOND_TOKEN}", second_opener.requests[0].get_header("Authorization"))
+        combined_output = first[1] + first[2] + second[1] + second[2]
+        self.assertNotIn(TOKEN, combined_output)
+        self.assertNotIn(SECOND_TOKEN, combined_output)
 
 
 if __name__ == "__main__":
