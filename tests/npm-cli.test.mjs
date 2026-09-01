@@ -12,14 +12,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { main } from '../cli/acceptora-agent-skill.mjs';
 
-const ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
-const PROJECT_ID = `proj_${ULID}`;
-const TOKEN_ENV = `ACCEPTORA_AGENT_TOKEN_PROJ_${ULID}`;
-const TOKEN = `avt_${ULID}_${'A'.repeat(48)}`;
+const PROJECT_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+const CREDENTIAL_ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAA';
+const PROJECT_ID = `proj_${PROJECT_ULID}`;
+const TOKEN_ENV = `ACCEPTORA_AGENT_TOKEN_PROJ_${PROJECT_ULID}`;
+const TOKEN = `avt_${CREDENTIAL_ULID}_${'A'.repeat(48)}`;
 const SCOPES = [
   'projects:read',
   'features:resolve',
@@ -42,6 +44,24 @@ class MemoryStream {
   }
 }
 
+class InteractiveInput extends EventEmitter {
+  constructor() {
+    super();
+    this.isTTY = true;
+    this.isRaw = false;
+  }
+
+  setEncoding() {}
+
+  setRawMode(value) {
+    this.isRaw = value;
+  }
+
+  resume() {}
+
+  pause() {}
+}
+
 function createProject(files = {}) {
   const root = mkdtempSync(join(tmpdir(), 'acceptora-npm-cli-'));
   const initialized = spawnSync('git', ['init', '--quiet', root], { encoding: 'utf8' });
@@ -54,34 +74,33 @@ function createProject(files = {}) {
   return root;
 }
 
-function projectIdFromAuthorization(authorization) {
-  const token = authorization.replace('Bearer ', '');
-  return `proj_${token.slice(4, 30)}`;
+function projectResponse(projectId = PROJECT_ID) {
+  return new Response(JSON.stringify({
+    project_id: projectId,
+    granted_scopes: SCOPES,
+    verification_instructions: {
+      schema_version: '1.0',
+      account_revision: 0,
+      project_revision: 0,
+      effective_digest: `sha256:${'0'.repeat(64)}`,
+      configured: false,
+      instructions: {
+        analysis_guidance: null,
+        manual_verification_guidance: null,
+        test_data_guidance: null,
+      },
+      sources: {
+        analysis_guidance: 'default',
+        manual_verification_guidance: 'default',
+        test_data_guidance: 'default',
+      },
+    },
+  }), { status: 200 });
 }
 
-function fakeFetch(url, options = {}) {
+function fakeFetch(url) {
   if (String(url).endsWith('/api/v1/integrations/project')) {
-    return Promise.resolve(new Response(JSON.stringify({
-      project_id: projectIdFromAuthorization(options.headers.Authorization),
-      granted_scopes: SCOPES,
-      verification_instructions: {
-        schema_version: '1.0',
-        account_revision: 0,
-        project_revision: 0,
-        effective_digest: `sha256:${'0'.repeat(64)}`,
-        configured: false,
-        instructions: {
-          analysis_guidance: null,
-          manual_verification_guidance: null,
-          test_data_guidance: null,
-        },
-        sources: {
-          analysis_guidance: 'default',
-          manual_verification_guidance: 'default',
-          test_data_guidance: 'default',
-        },
-      },
-    }), { status: 200 }));
+    return Promise.resolve(projectResponse());
   }
   throw new Error(`Unexpected URL: ${url}`);
 }
@@ -144,10 +163,10 @@ test('install writes only the selected client surfaces and never persists the se
         const config = JSON.parse(readFileSync(join(root, '.acceptora/config.json'), 'utf8'));
         assert.equal(config.project_id, PROJECT_ID);
         assert.equal(config.token_env, TOKEN_ENV);
-        assert.equal(config.installed_version, '1.0.0');
+        assert.equal(config.installed_version, '1.0.1');
         const manifest = JSON.parse(readFileSync(join(root, '.acceptora/install-manifest.json'), 'utf8'));
         assert.equal(manifest.client, client);
-        assert.equal(manifest.package_version, '1.0.0');
+        assert.equal(manifest.package_version, '1.0.1');
         assert.equal(Object.keys(manifest.payload).length, 4);
         assert.doesNotMatch(`${stdout.value}${stderr.value}${allFileText(root)}`, new RegExp(TOKEN));
 
@@ -163,6 +182,27 @@ test('install writes only the selected client surfaces and never persists the se
         rmSync(root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test('interactive project key paste shows masking without echoing the secret', async () => {
+  const root = createProject();
+  try {
+    const stdin = new InteractiveInput();
+    const { runtime, stdout, stderr } = testRuntime(root, { env: {}, stdin });
+    stdout.isTTY = true;
+
+    const installation = main(['install', '--client', 'codex'], runtime);
+    queueMicrotask(() => stdin.emit('data', `${TOKEN}\r`));
+    const status = await installation;
+
+    assert.equal(status, 2, stderr.value);
+    assert.match(stdout.value, /Acceptora project key \(hidden\): /);
+    assert.match(stdout.value, new RegExp(`\\*{${TOKEN.length}}`));
+    assert.doesNotMatch(`${stdout.value}${stderr.value}`, new RegExp(TOKEN));
+    assert.equal(stdin.isRaw, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -316,7 +356,7 @@ test('install rejects invalid verification instructions before writing', async (
     const { runtime, stderr } = testRuntime(root, {
       fetch: (url, options) => String(url).endsWith('/api/v1/integrations/project')
         ? Promise.resolve(new Response(JSON.stringify({
-          project_id: projectIdFromAuthorization(options.headers.Authorization),
+          project_id: PROJECT_ID,
           granted_scopes: SCOPES,
           verification_instructions: { schema_version: '1.0' },
         }), { status: 200 }))
@@ -482,14 +522,21 @@ test('update and uninstall restore the complete installation when a write fails'
 });
 
 test('different worktrees remain bound to different derived project variables', async () => {
-  const secondUlid = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
-  const secondTokenEnv = `ACCEPTORA_AGENT_TOKEN_PROJ_${secondUlid}`;
-  const secondToken = `avt_${secondUlid}_${'B'.repeat(48)}`;
+  const secondProjectUlid = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
+  const secondCredentialUlid = '01BX5ZZKBKACTAV9WEVGEMMVRX';
+  const secondProjectId = `proj_${secondProjectUlid}`;
+  const secondTokenEnv = `ACCEPTORA_AGENT_TOKEN_PROJ_${secondProjectUlid}`;
+  const secondToken = `avt_${secondCredentialUlid}_${'B'.repeat(48)}`;
   const first = createProject();
   const second = createProject();
   try {
     const firstRuntime = testRuntime(first).runtime;
-    const secondRuntime = testRuntime(second, { env: { [secondTokenEnv]: secondToken } }).runtime;
+    const secondRuntime = testRuntime(second, {
+      env: { [secondTokenEnv]: secondToken },
+      fetch: (url) => String(url).endsWith('/api/v1/integrations/project')
+        ? Promise.resolve(projectResponse(secondProjectId))
+        : Promise.reject(new Error(`Unexpected URL: ${url}`)),
+    }).runtime;
     assert.equal(await main(['install', '--client', 'codex'], firstRuntime), 0);
     assert.equal(await main(['install', '--client', 'codex'], secondRuntime), 0);
 

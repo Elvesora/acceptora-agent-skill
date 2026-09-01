@@ -314,15 +314,19 @@ function removeManagedBlock(value, startMarker, endMarker, label) {
   return before + after;
 }
 
-function credentialIdentity(token) {
-  const match = TOKEN_PATTERN.exec(token);
-  if (match === null) {
+function validateCredentialFormat(token) {
+  if (!TOKEN_PATTERN.test(token)) {
     throw new CliError('The supplied value is not a valid Acceptora project key.');
   }
-  const ulid = match.groups.ulid;
+}
+
+function projectIdentity(projectId) {
+  if (typeof projectId !== 'string' || !PROJECT_ID_PATTERN.test(projectId)) {
+    throw new CliError('Acceptora returned an invalid project identity.');
+  }
   return {
-    projectId: `proj_${ulid}`,
-    tokenEnv: `ACCEPTORA_AGENT_TOKEN_PROJ_${ulid}`,
+    projectId,
+    tokenEnv: `ACCEPTORA_AGENT_TOKEN_${projectId.toUpperCase()}`,
   };
 }
 
@@ -417,7 +421,7 @@ function validateVerificationInstructions(value) {
 }
 
 async function validateProjectKey(runtime, token) {
-  const identity = credentialIdentity(token);
+  validateCredentialFormat(token);
   const payload = await fetchJson(runtime, PROJECT_URL, {
     method: 'GET',
     headers: {
@@ -426,9 +430,10 @@ async function validateProjectKey(runtime, token) {
       'User-Agent': `Acceptora-Agent-Skill/${PACKAGE_DOCUMENT.version}`,
     },
   }, 'Acceptora project verification failed.');
-  if (payload === null || typeof payload !== 'object' || payload.project_id !== identity.projectId) {
-    throw new CliError('The project key does not match the authenticated Acceptora project.');
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new CliError('Acceptora returned an invalid project response.');
   }
+  const identity = projectIdentity(payload.project_id);
   const scopes = payload.granted_scopes;
   if (!Array.isArray(scopes)
     || scopes.length > 64
@@ -451,7 +456,7 @@ async function hiddenPrompt(runtime) {
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== 'function') {
     throw new CliError('Run the installer in an interactive terminal so the project key can be entered securely.');
   }
-  stdout.write('Acceptora project key: ');
+  stdout.write('Acceptora project key (hidden): ');
   return new Promise((resolvePromise, rejectPromise) => {
     let value = '';
     const previousRawMode = stdin.isRaw;
@@ -474,9 +479,13 @@ async function hiddenPrompt(runtime) {
           return;
         }
         if (character === '\u0008' || character === '\u007f') {
-          value = value.slice(0, -1);
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            stdout.write('\b \b');
+          }
         } else if (value.length < 255) {
           value += character;
+          stdout.write('*');
         }
       }
     };
@@ -518,10 +527,6 @@ async function selectCredential(runtime, explicitTokenEnv = null) {
   }
   if (explicitTokenEnv !== null) {
     const token = await hiddenPrompt(runtime);
-    const identity = credentialIdentity(token);
-    if (identity.tokenEnv !== explicitTokenEnv) {
-      throw new CliError('The supplied project key does not match --token-env.');
-    }
     return { token, tokenEnv: explicitTokenEnv, fromEnvironment: false };
   }
 
@@ -535,7 +540,7 @@ async function selectCredential(runtime, explicitTokenEnv = null) {
     return { token: runtime.env[selected], tokenEnv: selected, fromEnvironment: true };
   }
   const token = await hiddenPrompt(runtime);
-  return { token, tokenEnv: credentialIdentity(token).tokenEnv, fromEnvironment: false };
+  return { token, tokenEnv: null, fromEnvironment: false };
 }
 
 function isEnvironmentFilename(name) {
@@ -1013,10 +1018,6 @@ async function installedCredential(runtime, config, explicitTokenEnv) {
     return { token: visible, fromEnvironment: true };
   }
   const token = await hiddenPrompt(runtime);
-  const identity = credentialIdentity(token);
-  if (identity.projectId !== config.project_id || identity.tokenEnv !== config.token_env) {
-    throw new CliError('The supplied project key does not match this project installation.');
-  }
   return { token, fromEnvironment: false };
 }
 
@@ -1040,7 +1041,7 @@ async function installCommand(runtime, options, root) {
   const client = resolveClient(root, options.client, false);
   const selected = await selectCredential(runtime, options.tokenEnv);
   const identity = await validateProjectKey(runtime, selected.token);
-  if (selected.tokenEnv !== identity.tokenEnv) {
+  if (selected.tokenEnv !== null && selected.tokenEnv !== identity.tokenEnv) {
     throw new CliError('The selected environment variable does not match the project key.');
   }
   if (!selected.fromEnvironment) {

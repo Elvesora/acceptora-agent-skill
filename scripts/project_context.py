@@ -22,7 +22,6 @@ ACCEPTORA_ORIGIN = "https://www.acceptora.com"
 PROJECT_URL = f"{ACCEPTORA_ORIGIN}/api/v1/integrations/project"
 NPM_PACKAGE_URL = "https://registry.npmjs.org/acceptora-agent-skill/latest"
 CONFIG_RELATIVE_PATH = Path(".acceptora/config.json")
-TOKEN_ENV_PREFIX = "ACCEPTORA_AGENT_TOKEN_PROJ_"
 TOKEN_PATTERN = re.compile(r"^avt_(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})_[A-Za-z0-9]{48}$")
 PROJECT_ID_PATTERN = re.compile(r"^proj_[0-9A-HJKMNP-TV-Z]{26}$")
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
@@ -74,18 +73,22 @@ def _compact_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _credential_identity(token: str) -> tuple[str, str]:
-    match = TOKEN_PATTERN.fullmatch(token)
-    if match is None:
+def _validate_token(token: str) -> None:
+    if TOKEN_PATTERN.fullmatch(token) is None:
         raise ProjectContextError("The supplied value is not a valid Acceptora project key.")
-    ulid = match.group("ulid")
-    return f"proj_{ulid}", f"{TOKEN_ENV_PREFIX}{ulid}"
 
 
 def _environment_variable(project_id: str) -> str:
     if PROJECT_ID_PATTERN.fullmatch(project_id) is None:
         raise ProjectContextError("project_id must use the public proj_<ULID> form.")
     return f"ACCEPTORA_AGENT_TOKEN_{project_id.upper()}"
+
+
+def _project_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    project_id = payload.get("project_id")
+    if not isinstance(project_id, str) or PROJECT_ID_PATTERN.fullmatch(project_id) is None:
+        raise ProjectContextError("Acceptora returned an invalid project identity.")
+    return project_id, _environment_variable(project_id)
 
 
 def _read_hidden_token() -> str:
@@ -202,7 +205,8 @@ def _validate_instructions(value: object) -> dict[str, Any]:
 
 
 def _validate_project(payload: dict[str, Any], project_id: str) -> tuple[list[str], dict[str, Any]]:
-    if payload.get("project_id") != project_id:
+    authenticated_project_id, _ = _project_identity(payload)
+    if authenticated_project_id != project_id:
         raise ProjectContextError("The project key does not match the selected Acceptora project.")
     scopes = payload.get("granted_scopes")
     if (
@@ -352,8 +356,10 @@ def _npm_update_status(installed_version: str, *, opener: Any | None = None) -> 
 
 def _validate_command() -> dict[str, object]:
     token = _read_hidden_token()
-    project_id, token_env = _credential_identity(token)
-    scopes, _ = _validate_project(_request_project(token), project_id)
+    _validate_token(token)
+    payload = _request_project(token)
+    project_id, token_env = _project_identity(payload)
+    scopes, _ = _validate_project(payload, project_id)
     return {
         "status": "validated",
         "project_id": project_id,
@@ -366,8 +372,10 @@ def _validate_command() -> dict[str, object]:
 def _store_windows_command() -> dict[str, object]:
     _require_windows()
     token = _read_hidden_token()
-    project_id, token_env = _credential_identity(token)
-    scopes, _ = _validate_project(_request_project(token), project_id)
+    _validate_token(token)
+    payload = _request_project(token)
+    project_id, token_env = _project_identity(payload)
+    scopes, _ = _validate_project(payload, project_id)
     broadcast_sent = _store_current_user_environment(token_env, token)
     return {
         "status": "stored",
@@ -386,9 +394,7 @@ def _preflight_command(project_root: Path) -> dict[str, object]:
     token = os.environ.get(token_env)
     if token is None:
         raise ProjectContextError(f"The required project environment variable {token_env} is missing.")
-    token_project_id, derived_token_env = _credential_identity(token)
-    if token_project_id != config["project_id"] or derived_token_env != token_env:
-        raise ProjectContextError("The project environment key does not match the configured Acceptora project.")
+    _validate_token(token)
     scopes, instructions = _validate_project(_request_project(token), config["project_id"])
     try:
         update = _npm_update_status(config["installed_version"])

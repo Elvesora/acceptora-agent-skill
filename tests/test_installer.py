@@ -16,7 +16,7 @@ INSTALLER = PACKAGE_ROOT / "scripts" / "install.py"
 CANONICAL_REPOSITORY = "https://github.com/Elvesora/acceptora-agent-skill"
 PROJECT_ID = "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV"
 TOKEN_ENV = "ACCEPTORA_AGENT_TOKEN_PROJ_01ARZ3NDEKTSV4RRFFQ69G5FAV"
-SECRET = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAV_" + ("A" * 48)
+SECRET = "avt_01ARZ3NDEKTSV4RRFFQ69G5FAA_" + ("A" * 48)
 PAYLOAD = {
     "SKILL.md": "---\nname: acceptora\ndescription: Test skill.\n---\n\nUse Acceptora.\n",
     "agents/openai.yaml": "interface:\n  display_name: Acceptora\n",
@@ -26,16 +26,24 @@ import re
 
 TOKEN = re.compile(r"^avt_(?P<ulid>[0-9A-HJKMNP-TV-Z]{26})_[A-Za-z0-9]{48}$")
 
-def _credential_identity(token):
+def _validate_token(token):
     match = TOKEN.fullmatch(token)
     if match is None:
         raise RuntimeError("invalid project key")
-    ulid = match.group("ulid")
-    return f"proj_{ulid}", f"ACCEPTORA_AGENT_TOKEN_PROJ_{ulid}"
 
 def _request_project(token):
-    project_id, _ = _credential_identity(token)
+    _validate_token(token)
+    credential_ulid = token[4:30]
+    projects = {
+        "01ARZ3NDEKTSV4RRFFQ69G5FAA": "proj_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "01BX5ZZKBKACTAV9WEVGEMMVRX": "proj_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+    }
+    project_id = projects[credential_ulid]
     return {"project_id": project_id}
+
+def _project_identity(payload):
+    project_id = payload["project_id"]
+    return project_id, f"ACCEPTORA_AGENT_TOKEN_{project_id.upper()}"
 
 def _validate_project(payload, project_id):
     if payload.get("project_id") != project_id:
@@ -480,7 +488,7 @@ class InstallerTest(unittest.TestCase):
         result_json(run_installer(self.source, "install", first, "codex"))
 
         environment = installer_environment(with_token=False)
-        environment[second_token_env] = "avt_01BX5ZZKBKACTAV9WEVGEMMVRZ_" + ("B" * 48)
+        environment[second_token_env] = "avt_01BX5ZZKBKACTAV9WEVGEMMVRX_" + ("B" * 48)
         process = subprocess.run(
             [
                 sys.executable,
@@ -512,7 +520,7 @@ class InstallerTest(unittest.TestCase):
         target = self.workspace / "ambiguous"
         build_target(target)
         environment = installer_environment(with_token=True)
-        environment[second_token_env] = "avt_01BX5ZZKBKACTAV9WEVGEMMVRZ_" + ("B" * 48)
+        environment[second_token_env] = "avt_01BX5ZZKBKACTAV9WEVGEMMVRX_" + ("B" * 48)
         command = [
             sys.executable,
             "-B",

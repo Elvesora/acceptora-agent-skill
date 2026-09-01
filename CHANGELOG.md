@@ -4,6 +4,13 @@ All notable changes to Acceptora Agent Skill are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-01
+
+### Fixed
+
+- Use the authenticated API project ID instead of the credential ID embedded in a project key.
+- Show masked feedback while a project key is entered or pasted into the installer.
+
 ## [1.0.0] - 2026-09-01
 
 ### Added

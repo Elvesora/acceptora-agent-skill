@@ -209,10 +209,11 @@ def _validate_selected_key(token_env: str) -> str:
     try:
         spec.loader.exec_module(helper)
         token = os.environ[token_env]
-        project_id, derived_token_env = helper._credential_identity(token)
+        helper._validate_token(token)
+        payload = helper._request_project(token)
+        project_id, derived_token_env = helper._project_identity(payload)
         if derived_token_env != token_env:
             raise InstallError("The selected project key does not match --token-env.")
-        payload = helper._request_project(token)
         helper._validate_project(payload, project_id)
     except InstallError:
         raise
