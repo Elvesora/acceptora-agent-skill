@@ -46,19 +46,19 @@ const CLIENTS = {
   codex: {
     label: 'Codex',
     skillDirectory: '.agents/skills/acceptora',
-    instructionFile: 'AGENTS.md',
+    legacyInstructionFile: 'AGENTS.md',
     mcpFile: '.codex/config.toml',
   },
   'claude-code': {
     label: 'Claude Code',
     skillDirectory: '.claude/skills/acceptora',
-    instructionFile: 'CLAUDE.md',
+    legacyInstructionFile: 'CLAUDE.md',
     mcpFile: '.mcp.json',
   },
   'gemini-cli': {
     label: 'Gemini CLI',
     skillDirectory: '.gemini/skills/acceptora',
-    instructionFile: 'GEMINI.md',
+    legacyInstructionFile: 'GEMINI.md',
     mcpFile: '.gemini/settings.json',
   },
 };
@@ -71,13 +71,9 @@ const SKILL_PAYLOAD = [
 ];
 const INSTRUCTION_START = '<!-- acceptora:start -->';
 const INSTRUCTION_END = '<!-- acceptora:end -->';
-const PROJECT_INSTRUCTION = `${INSTRUCTION_START} Before implementation work or manual-verification changes, use the project-local Acceptora skill. It fetches fresh project instructions and synchronizes verification after eligible changes. ${INSTRUCTION_END}`;
 const MCP_START = '# acceptora-mcp:start';
 const MCP_END = '# acceptora-mcp:end';
-const INSTRUCTION_FIELDS = ['analysis_guidance', 'manual_verification_guidance', 'test_data_guidance'];
-const INSTRUCTION_SOURCES = new Set(['default', 'account', 'project']);
 const MAX_RESPONSE_BYTES = 1_048_576;
-const MAX_INSTRUCTION_CHARACTERS = 12_000;
 
 export class CliError extends Error {}
 
@@ -376,45 +372,6 @@ async function fetchJson(runtime, url, options, failureMessage) {
   }
 }
 
-function validateVerificationInstructions(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || value.schema_version !== '1.0') {
-    throw new CliError('Acceptora returned invalid verification instructions.');
-  }
-  for (const revision of [value.account_revision, value.project_revision]) {
-    if (!Number.isSafeInteger(revision) || revision < 0) {
-      throw new CliError('Acceptora returned invalid verification instructions.');
-    }
-  }
-  if (typeof value.configured !== 'boolean'
-    || value.instructions === null
-    || typeof value.instructions !== 'object'
-    || Array.isArray(value.instructions)
-    || value.sources === null
-    || typeof value.sources !== 'object'
-    || Array.isArray(value.sources)
-    || typeof value.effective_digest !== 'string'
-    || !DIGEST_PATTERN.test(value.effective_digest)) {
-    throw new CliError('Acceptora returned invalid verification instructions.');
-  }
-  let configured = false;
-  for (const field of INSTRUCTION_FIELDS) {
-    const instruction = value.instructions[field];
-    const source = value.sources[field];
-    if (instruction !== null && (typeof instruction !== 'string'
-      || instruction.length > MAX_INSTRUCTION_CHARACTERS
-      || instruction.replaceAll('\r\n', '\n').replaceAll('\r', '\n').replace(/^[ \t\n\r\0\v]+|[ \t\n\r\0\v]+$/g, '') !== instruction)) {
-      throw new CliError('Acceptora returned invalid verification instructions.');
-    }
-    if (typeof source !== 'string' || !INSTRUCTION_SOURCES.has(source) || ((instruction === null) !== (source === 'default'))) {
-      throw new CliError('Acceptora returned invalid verification instructions.');
-    }
-    configured ||= instruction !== null;
-  }
-  if (configured !== value.configured) {
-    throw new CliError('Acceptora returned invalid verification instructions.');
-  }
-}
-
 async function validateProjectKey(runtime, token) {
   validateCredentialFormat(token);
   const payload = await fetchJson(runtime, PROJECT_URL, {
@@ -439,7 +396,6 @@ async function validateProjectKey(runtime, token) {
   if ([...REQUIRED_SCOPES].some((scope) => !scopes.includes(scope))) {
     throw new CliError('The project key lacks required Acceptora workflow scopes.');
   }
-  validateVerificationInstructions(payload.verification_instructions);
   return identity;
 }
 
@@ -589,8 +545,11 @@ function installManifestDocument(client, payload, createdFiles) {
     schema_version: 1,
     client,
     package_version: PACKAGE_DOCUMENT.version,
-    instruction: PROJECT_INSTRUCTION,
-    created_files: createdFiles,
+    instruction: '',
+    created_files: {
+      instruction: false,
+      mcp: createdFiles.mcp,
+    },
     payload: Object.fromEntries([...payload].map(([relativePath, body]) => [relativePath, sha256(body)])),
   };
 }
@@ -603,8 +562,9 @@ function loadInstallManifest(root) {
     || document.schema_version !== 1
     || CLIENTS[document.client] === undefined
     || typeof document.instruction !== 'string'
-    || !document.instruction.startsWith(INSTRUCTION_START)
-    || !document.instruction.endsWith(INSTRUCTION_END)
+    || (document.instruction !== ''
+      && (!document.instruction.startsWith(INSTRUCTION_START)
+        || !document.instruction.endsWith(INSTRUCTION_END)))
     || typeof document.package_version !== 'string'
     || !VERSION_PATTERN.test(document.package_version)
     || document.created_files === null
@@ -630,6 +590,40 @@ function loadInstallManifest(root) {
     throw new CliError('Acceptora install manifest is invalid.');
   }
   return document;
+}
+
+function prepareLegacyInstructionRemoval(root, profile, installManifest) {
+  if (installManifest.instruction === '') {
+    return null;
+  }
+  const path = safeProjectPath(root, profile.legacyInstructionFile);
+  const current = readText(path, 'Project instruction file');
+  if (countOccurrences(current, installManifest.instruction) !== 1) {
+    return null;
+  }
+  const start = current.indexOf(installManifest.instruction);
+  let before = current.slice(0, start);
+  let after = current.slice(start + installManifest.instruction.length);
+  if (before.endsWith('\n') && after.startsWith('\n')) {
+    after = after.slice(1);
+  }
+  const content = before + after;
+  return {
+    path,
+    content,
+    remove: installManifest.created_files.instruction && content.trim() === '',
+  };
+}
+
+function applyLegacyInstructionRemoval(runtime, mutation) {
+  if (mutation === null) {
+    return;
+  }
+  if (mutation.remove) {
+    unlinkSync(mutation.path);
+    return;
+  }
+  writeProjectFile(runtime, mutation.path, mutation.content);
 }
 
 function listSkillFiles(root, directory = root, result = []) {
@@ -993,28 +987,17 @@ async function installCommand(runtime, options, root) {
 
   const profile = CLIENTS[client];
   const payload = expectedPayload();
-  const instructionPath = safeProjectPath(root, profile.instructionFile);
-  const instructionFileExisted = existsSync(instructionPath);
-  const instruction = upsertManagedBlock(
-    readText(instructionPath, 'Project instruction file'),
-    PROJECT_INSTRUCTION,
-    INSTRUCTION_START,
-    INSTRUCTION_END,
-    'Project instruction file',
-  );
   const mcpPath = safeProjectPath(root, profile.mcpFile);
   const mcpFileExisted = existsSync(mcpPath);
   const mcp = prepareMcp(root, client, identity.tokenEnv, false);
-  const snapshots = [selected.file.path, instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
+  const snapshots = [selected.file.path, mcp.path, configPath, installManifestPath].map(snapshotFile);
 
   const skillMutation = replaceSkill(root, profile.skillDirectory, payload, false);
   try {
     writeProjectFile(runtime, selected.file.path, selected.content);
-    writeProjectFile(runtime, instructionPath, instruction);
     writeProjectFile(runtime, mcp.path, mcp.content);
     writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(identity.projectId), null, 2)}\n`);
     writeProjectFile(runtime, installManifestPath, `${JSON.stringify(installManifestDocument(client, payload, {
-      instruction: !instructionFileExisted,
       mcp: !mcpFileExisted,
     }), null, 2)}\n`);
     skillMutation.commit();
@@ -1048,28 +1031,22 @@ async function updateCommand(runtime, options, root) {
   const payload = expectedPayload();
   const skillRoot = safeProjectPath(root, profile.skillDirectory);
   requireOwnedSkill(skillRoot, installManifest);
-  const instructionPath = safeProjectPath(root, profile.instructionFile);
-  const currentInstruction = readText(instructionPath, 'Project instruction file');
-  const instructionBounds = managedBounds(currentInstruction, INSTRUCTION_START, INSTRUCTION_END, 'Project instruction file');
-  if (instructionBounds === null || currentInstruction.slice(instructionBounds[0], instructionBounds[1]) !== installManifest.instruction) {
-    throw new CliError('Project instruction file installer-owned Acceptora block has drifted.');
-  }
-  const instruction = upsertManagedBlock(
-    currentInstruction,
-    PROJECT_INSTRUCTION,
-    INSTRUCTION_START,
-    INSTRUCTION_END,
-    'Project instruction file',
-  );
+  const legacyInstruction = prepareLegacyInstructionRemoval(root, profile, installManifest);
   const mcp = prepareMcp(root, client, PROJECT_TOKEN_ENV, true, config.token_env);
   const configPath = safeProjectPath(root, CONFIG_PATH);
   const installManifestPath = safeProjectPath(root, INSTALL_MANIFEST_PATH);
-  const snapshots = [selected.file.path, instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
+  const snapshots = [
+    selected.file.path,
+    ...(legacyInstruction === null ? [] : [legacyInstruction.path]),
+    mcp.path,
+    configPath,
+    installManifestPath,
+  ].map(snapshotFile);
 
   const skillMutation = replaceSkill(root, profile.skillDirectory, payload, true);
   try {
     writeProjectFile(runtime, selected.file.path, selected.content);
-    writeProjectFile(runtime, instructionPath, instruction);
+    applyLegacyInstructionRemoval(runtime, legacyInstruction);
     writeProjectFile(runtime, mcp.path, mcp.content);
     writeProjectFile(runtime, configPath, `${JSON.stringify(configDocument(config.project_id), null, 2)}\n`);
     writeProjectFile(runtime, installManifestPath, `${JSON.stringify(installManifestDocument(client, payload, installManifest.created_files), null, 2)}\n`);
@@ -1098,16 +1075,11 @@ async function doctorCommand(runtime, options, root) {
   const profile = CLIENTS[client];
   const payload = expectedPayload();
   const skillRoot = safeProjectPath(root, profile.skillDirectory);
-  const instruction = readText(safeProjectPath(root, profile.instructionFile), 'Project instruction file');
   requireOwnedSkill(skillRoot, installManifest);
   prepareMcp(root, client, config.token_env, true);
-  const instructionBounds = managedBounds(instruction, INSTRUCTION_START, INSTRUCTION_END, 'Project instruction file');
-  if (instructionBounds === null || instruction.slice(instructionBounds[0], instructionBounds[1]) !== installManifest.instruction) {
-    throw new CliError('Project instruction file is missing its installer-owned Acceptora block.');
-  }
   const current = installManifest.package_version === PACKAGE_DOCUMENT.version
     && payloadMatches(skillRoot, payload)
-    && installManifest.instruction === PROJECT_INSTRUCTION;
+    && installManifest.instruction === '';
   writeLine(runtime.stdout, current ? 'Acceptora installation is ready.' : 'Acceptora update is available.');
   writeLine(runtime.stdout, `Project: ${config.project_id}`);
   writeLine(runtime.stdout, `Client: ${profile.label}`);
@@ -1136,18 +1108,7 @@ function uninstallCommand(runtime, options, root) {
   const skillRoot = safeProjectPath(root, profile.skillDirectory);
   requireOwnedSkill(skillRoot, installManifest);
 
-  const instructionPath = safeProjectPath(root, profile.instructionFile);
-  const currentInstruction = readText(instructionPath, 'Project instruction file');
-  const instructionBounds = managedBounds(currentInstruction, INSTRUCTION_START, INSTRUCTION_END, 'Project instruction file');
-  if (instructionBounds === null || currentInstruction.slice(instructionBounds[0], instructionBounds[1]) !== installManifest.instruction) {
-    throw new CliError('Project instruction file installer-owned Acceptora block has drifted.');
-  }
-  const instruction = removeManagedBlock(
-    currentInstruction,
-    INSTRUCTION_START,
-    INSTRUCTION_END,
-    'Project instruction file',
-  );
+  const legacyInstruction = prepareLegacyInstructionRemoval(root, profile, installManifest);
   const mcp = removeMcp(root, client, config.token_env);
 
   const resolvedSkillRoot = resolve(skillRoot);
@@ -1156,14 +1117,15 @@ function uninstallCommand(runtime, options, root) {
   }
   const configPath = safeProjectPath(root, CONFIG_PATH);
   const installManifestPath = safeProjectPath(root, INSTALL_MANIFEST_PATH);
-  const snapshots = [instructionPath, mcp.path, configPath, installManifestPath].map(snapshotFile);
+  const snapshots = [
+    ...(legacyInstruction === null ? [] : [legacyInstruction.path]),
+    mcp.path,
+    configPath,
+    installManifestPath,
+  ].map(snapshotFile);
   const skillMutation = detachSkill(root, profile.skillDirectory);
   try {
-    if (installManifest.created_files.instruction && instruction.trim() === '') {
-      unlinkSync(instructionPath);
-    } else {
-      writeProjectFile(runtime, instructionPath, instruction);
-    }
+    applyLegacyInstructionRemoval(runtime, legacyInstruction);
     if (installManifest.created_files.mcp && mcp.empty) {
       unlinkSync(mcp.path);
     } else {
@@ -1178,7 +1140,6 @@ function uninstallCommand(runtime, options, root) {
   }
   removeEmptyParents(dirname(configPath), root);
   removeEmptyParents(dirname(skillRoot), root);
-  removeEmptyParents(dirname(instructionPath), root);
   removeEmptyParents(dirname(mcp.path), root);
   writeLine(runtime.stdout, `Acceptora uninstalled for ${profile.label}. The project credential was not removed.`);
 }

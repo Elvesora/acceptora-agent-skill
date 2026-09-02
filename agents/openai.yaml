@@ -2,3 +2,6 @@ interface:
   display_name: "Acceptora"
   short_description: "Verify changes in any software stack"
   default_prompt: "Use $acceptora to fetch fresh project instructions before work and synchronize manual verification after eligible changes."
+
+policy:
+  allow_implicit_invocation: false

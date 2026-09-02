@@ -38,7 +38,7 @@ def instructions(revision: int = 1) -> dict[str, object]:
         "instructions": {
             "analysis_guidance": f"Fresh account guidance {revision}.",
             "manual_verification_guidance": "Open the generated project link.",
-            "test_data_guidance": None,
+            "test_data_guidance": "Use the default test data guidance.",
         },
         "sources": {
             "analysis_guidance": "account",
@@ -117,6 +117,15 @@ def run_main(arguments: list[str]) -> tuple[int, str, str]:
 
 
 class ProjectContextTest(unittest.TestCase):
+    def assert_degraded_preflight(self, status: int, stdout: str, stderr: str) -> dict[str, object]:
+        self.assertEqual(0, status, stderr)
+        self.assertEqual("", stderr)
+        result = json.loads(stdout)
+        self.assertEqual("degraded", result["status"])
+        self.assertIsNone(result["verification_instructions"])
+        self.assertIsInstance(result["warning"], str)
+        return result
+
     def test_preflight_uses_only_the_project_acceptora_env_token(self) -> None:
         opener = Opener(project_payload())
         with tempfile.TemporaryDirectory() as temporary:
@@ -208,6 +217,54 @@ class ProjectContextTest(unittest.TestCase):
         )
         self.assertNotIn(TOKEN, stdout + stderr)
 
+    def test_preflight_degrades_without_blocking_when_instructions_are_invalid(self) -> None:
+        payload = project_payload()
+        payload["verification_instructions"] = {"schema_version": "1.0"}
+        opener = Opener(payload)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root)
+            write_project_token(root)
+            with (
+                patch.object(PROJECT_CONTEXT, "_project_opener", return_value=opener),
+                patch.object(PROJECT_CONTEXT, "_npm_update_status", return_value={"status": "current"}),
+            ):
+                status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
+
+        result = self.assert_degraded_preflight(status, stdout, stderr)
+        self.assertEqual(PROJECT_ID, result["project_id"])
+        self.assertEqual(SCOPES, result["granted_scopes"])
+        self.assertNotIn(TOKEN, stdout + stderr)
+
+    def test_preflight_degrades_for_rejected_key_foreign_project_and_missing_scopes(self) -> None:
+        foreign_project = project_payload(project_id=SECOND_PROJECT_ID)
+        missing_scopes = project_payload()
+        missing_scopes["granted_scopes"] = SCOPES[1:]
+        cases = (
+            ("rejected-key", None, PROJECT_CONTEXT.ProjectContextError("Acceptora rejected the supplied project key.")),
+            ("foreign-project", foreign_project, None),
+            ("missing-scopes", missing_scopes, None),
+        )
+
+        for case, payload, error in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_config(root)
+                write_project_token(root)
+                request = (
+                    patch.object(PROJECT_CONTEXT, "_request_project", side_effect=error)
+                    if error is not None
+                    else patch.object(PROJECT_CONTEXT, "_request_project", return_value=payload)
+                )
+                with (
+                    request,
+                    patch.object(PROJECT_CONTEXT, "_npm_update_status", return_value={"status": "current"}),
+                ):
+                    status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
+
+            self.assert_degraded_preflight(status, stdout, stderr)
+            self.assertNotIn(TOKEN, stdout + stderr)
+
     def test_preflight_does_not_fall_back_to_application_env_or_process_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -223,10 +280,8 @@ class ProjectContextTest(unittest.TestCase):
             ):
                 status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(2, status)
-        self.assertEqual("", stdout)
-        self.assertIn(".acceptora-env", stderr)
-        self.assertNotIn(TOKEN, stderr)
+        self.assert_degraded_preflight(status, stdout, stderr)
+        self.assertNotIn(TOKEN, stdout + stderr)
 
     def test_project_identity_scopes_and_instruction_contract_are_enforced(self) -> None:
         cases = []
@@ -264,6 +319,27 @@ class ProjectContextTest(unittest.TestCase):
         self.assertEqual(SCOPES, scopes)
         self.assertEqual({"version": 2}, validated["future_metadata"])
         self.assertEqual("Future server guidance.", validated["instructions"]["future_guidance"])
+
+    def test_instruction_contract_accepts_effective_defaults_without_custom_configuration(self) -> None:
+        context = {
+            "schema_version": "1.0",
+            "account_revision": 0,
+            "project_revision": 0,
+            "effective_digest": "sha256:" + ("b" * 64),
+            "configured": False,
+            "instructions": {
+                "analysis_guidance": "Default analysis guidance.",
+                "manual_verification_guidance": "Default manual verification guidance.",
+                "test_data_guidance": "Default test data guidance.",
+            },
+            "sources": {
+                "analysis_guidance": "default",
+                "manual_verification_guidance": "default",
+                "test_data_guidance": "default",
+            },
+        }
+
+        self.assertIs(context, PROJECT_CONTEXT._validate_instructions(context))
 
     def test_oversized_project_response_and_redirect_are_rejected(self) -> None:
         oversized = Response({}, raw=b"x" * (PROJECT_CONTEXT.MAX_RESPONSE_BYTES + 1))
@@ -313,10 +389,9 @@ class ProjectContextTest(unittest.TestCase):
                 ):
                     status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-            self.assertEqual(2, status)
-            self.assertEqual("", stdout)
-            self.assertNotIn(TOKEN, stderr)
-            self.assertNotIn(SECOND_TOKEN, stderr)
+            self.assert_degraded_preflight(status, stdout, stderr)
+            self.assertNotIn(TOKEN, stdout + stderr)
+            self.assertNotIn(SECOND_TOKEN, stdout + stderr)
 
     def test_preflight_rejects_non_regular_token_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -326,9 +401,7 @@ class ProjectContextTest(unittest.TestCase):
 
             status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(2, status)
-        self.assertEqual("", stdout)
-        self.assertIn(".acceptora-env", stderr)
+        self.assert_degraded_preflight(status, stdout, stderr)
 
     def test_preflight_rejects_symlinked_token_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,10 +412,8 @@ class ProjectContextTest(unittest.TestCase):
             with patch.object(Path, "is_symlink", lambda path: path.name == ".acceptora-env"):
                 status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(2, status)
-        self.assertEqual("", stdout)
-        self.assertIn(".acceptora-env", stderr)
-        self.assertNotIn(TOKEN, stderr)
+        self.assert_degraded_preflight(status, stdout, stderr)
+        self.assertNotIn(TOKEN, stdout + stderr)
 
     def test_preflight_rejects_legacy_project_derived_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -352,9 +423,8 @@ class ProjectContextTest(unittest.TestCase):
 
             status, stdout, stderr = run_main(["preflight", "--project-root", str(root)])
 
-        self.assertEqual(2, status)
-        self.assertEqual("", stdout)
-        self.assertNotIn(TOKEN, stderr)
+        self.assert_degraded_preflight(status, stdout, stderr)
+        self.assertNotIn(TOKEN, stdout + stderr)
 
     def test_preflight_keeps_two_project_roots_and_keys_isolated(self) -> None:
         first_opener = Opener(project_payload())

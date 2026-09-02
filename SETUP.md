@@ -23,13 +23,13 @@ Add `/.acceptora-env` to `.gitignore`. Never put the key in a command argument, 
 
 ## Installed project files
 
-- Codex: `.agents/skills/acceptora`, `AGENTS.md`, `.codex/config.toml`
-- Claude Code: `.claude/skills/acceptora`, `CLAUDE.md`, `.mcp.json`
-- Gemini CLI: `.gemini/skills/acceptora`, `GEMINI.md`, `.gemini/settings.json`
+- Codex: `.agents/skills/acceptora`, `.codex/config.toml`
+- Claude Code: `.claude/skills/acceptora`, `.mcp.json`
+- Gemini CLI: `.gemini/skills/acceptora`, `.gemini/settings.json`
 - Shared project binding and ownership: `.acceptora/config.json`, `.acceptora/install-manifest.json`
 - Project key: `.acceptora-env`
 
-Unrelated project instructions and client settings are preserved. Restart the selected client after a completed install or update.
+The installer never modifies `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`. Restart the selected client after a completed install or update, then invoke Acceptora directly by name and describe the task. Unrelated project instructions and client settings are preserved.
 
 ## Lifecycle commands
 

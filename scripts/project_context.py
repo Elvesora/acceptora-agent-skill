@@ -168,6 +168,7 @@ def _validate_instructions(value: object) -> dict[str, Any]:
     ):
         raise ProjectContextError("Acceptora returned invalid verification instructions.")
 
+    has_configured_source = False
     for field in INSTRUCTION_FIELDS:
         instruction = instructions[field]
         source = sources[field]
@@ -179,10 +180,11 @@ def _validate_instructions(value: object) -> dict[str, Any]:
             raise ProjectContextError("Acceptora returned invalid verification instructions.")
         if not isinstance(source, str) or source not in INSTRUCTION_SOURCES:
             raise ProjectContextError("Acceptora returned invalid verification instructions.")
-        if (instruction is None) != (source == "default"):
+        if source != "default" and instruction is None:
             raise ProjectContextError("Acceptora returned invalid verification instructions.")
+        has_configured_source = has_configured_source or source != "default"
 
-    if configured is not any(instructions[field] is not None for field in INSTRUCTION_FIELDS):
+    if configured is not has_configured_source:
         raise ProjectContextError("Acceptora returned invalid verification instructions.")
     observed_digest = value.get("effective_digest")
     if not isinstance(observed_digest, str) or DIGEST_PATTERN.fullmatch(observed_digest) is None:
@@ -190,7 +192,7 @@ def _validate_instructions(value: object) -> dict[str, Any]:
     return value
 
 
-def _validate_project(payload: dict[str, Any], project_id: str) -> tuple[list[str], dict[str, Any]]:
+def _validate_project_access(payload: dict[str, Any], project_id: str) -> list[str]:
     authenticated_project_id, _ = _project_identity(payload)
     if authenticated_project_id != project_id:
         raise ProjectContextError("The project key does not match the selected Acceptora project.")
@@ -204,8 +206,12 @@ def _validate_project(payload: dict[str, Any], project_id: str) -> tuple[list[st
         raise ProjectContextError("Acceptora returned invalid project scopes.")
     if not REQUIRED_SCOPES.issubset(scopes):
         raise ProjectContextError("The project key lacks required Acceptora workflow scopes.")
-    instructions = _validate_instructions(payload.get("verification_instructions"))
-    return scopes, instructions
+    return scopes
+
+
+def _validate_project(payload: dict[str, Any], project_id: str) -> tuple[list[str], dict[str, Any]]:
+    scopes = _validate_project_access(payload, project_id)
+    return scopes, _validate_instructions(payload.get("verification_instructions"))
 
 
 def _load_config(project_root: Path) -> dict[str, str]:
@@ -319,7 +325,14 @@ def _preflight_command(project_root: Path) -> dict[str, object]:
     config = _load_config(project_root)
     token_env = config["token_env"]
     token = _read_project_token(project_root)
-    scopes, instructions = _validate_project(_request_project(token), config["project_id"])
+    payload = _request_project(token)
+    scopes = _validate_project_access(payload, config["project_id"])
+    instruction_warning = None
+    try:
+        instructions = _validate_instructions(payload.get("verification_instructions"))
+    except ProjectContextError as error:
+        instructions = None
+        instruction_warning = str(error)
     try:
         update = _npm_update_status(config["installed_version"])
     except ProjectContextError as error:
@@ -331,14 +344,17 @@ def _preflight_command(project_root: Path) -> dict[str, object]:
             "auto_apply": False,
             "error": str(error),
         }
-    return {
-        "status": "ready",
+    result = {
+        "status": "ready" if instruction_warning is None else "degraded",
         "project_id": config["project_id"],
         "environment_variable": token_env,
         "granted_scopes": scopes,
         "verification_instructions": instructions,
         "skill_update": update,
     }
+    if instruction_warning is not None:
+        result["warning"] = instruction_warning
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -352,10 +368,29 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
-        result = _preflight_command(arguments.project_root)
     except ProjectContextError as error:
         print(_compact_json({"status": "error", "error": str(error)}), file=sys.stderr)
         return 2
+    except (EOFError, KeyboardInterrupt):
+        print(_compact_json({"status": "cancelled"}), file=sys.stderr)
+        return 130
+    except Exception:
+        print(_compact_json({"status": "error", "error": "Project context failed safely."}), file=sys.stderr)
+        return 1
+
+    try:
+        result = _preflight_command(arguments.project_root)
+    except ProjectContextError as error:
+        print(
+            _compact_json(
+                {
+                    "status": "degraded",
+                    "verification_instructions": None,
+                    "warning": str(error),
+                }
+            )
+        )
+        return 0
     except (EOFError, KeyboardInterrupt):
         print(_compact_json({"status": "cancelled"}), file=sys.stderr)
         return 130

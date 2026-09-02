@@ -24,6 +24,7 @@ const PROJECT_ID = `proj_${PROJECT_ULID}`;
 const TOKEN_ENV = 'ACCEPTORA_PROJECT_TOKEN';
 const TOKEN_FILE = '.acceptora-env';
 const TOKEN = `avt_${CREDENTIAL_ULID}_${'A'.repeat(48)}`;
+const LEGACY_INSTRUCTION = '<!-- acceptora:start --> Before implementation work or manual-verification changes, use the project-local Acceptora skill. It fetches fresh project instructions and synchronizes verification after eligible changes. <!-- acceptora:end -->';
 const SCOPES = [
   'projects:read',
   'features:resolve',
@@ -87,9 +88,9 @@ function projectResponse(projectId = PROJECT_ID) {
       effective_digest: `sha256:${'0'.repeat(64)}`,
       configured: false,
       instructions: {
-        analysis_guidance: null,
-        manual_verification_guidance: null,
-        test_data_guidance: null,
+        analysis_guidance: 'Default analysis guidance.',
+        manual_verification_guidance: 'Default manual verification guidance.',
+        test_data_guidance: 'Default test data guidance.',
       },
       sources: {
         analysis_guidance: 'default',
@@ -168,9 +169,9 @@ function nonCredentialFileText(root) {
 
 test('install stores the key only in the project credential file and completes for each client', async (context) => {
   const clients = {
-    codex: ['.agents/skills/acceptora/SKILL.md', 'AGENTS.md', '.codex/config.toml'],
-    'claude-code': ['.claude/skills/acceptora/SKILL.md', 'CLAUDE.md', '.mcp.json'],
-    'gemini-cli': ['.gemini/skills/acceptora/SKILL.md', 'GEMINI.md', '.gemini/settings.json'],
+    codex: ['.agents/skills/acceptora/SKILL.md', '.codex/config.toml', 'AGENTS.md'],
+    'claude-code': ['.claude/skills/acceptora/SKILL.md', '.mcp.json', 'CLAUDE.md'],
+    'gemini-cli': ['.gemini/skills/acceptora/SKILL.md', '.gemini/settings.json', 'GEMINI.md'],
   };
 
   for (const [client, paths] of Object.entries(clients)) {
@@ -181,7 +182,9 @@ test('install stores the key only in the project credential file and completes f
         const status = await main(['install', '--client', client], runtime);
 
         assert.equal(status, 0, stderr.value);
-        paths.forEach((path) => assert.equal(existsSync(join(root, path)), true, path));
+        assert.equal(existsSync(join(root, paths[0])), true, paths[0]);
+        assert.equal(existsSync(join(root, paths[1])), true, paths[1]);
+        assert.equal(existsSync(join(root, paths[2])), false, paths[2]);
         assert.equal(existsSync(join(root, '.acceptora/config.json')), true);
         assert.equal(existsSync(join(root, '.acceptora/install-manifest.json')), true);
         const config = JSON.parse(readFileSync(join(root, '.acceptora/config.json'), 'utf8'));
@@ -191,23 +194,25 @@ test('install stores the key only in the project credential file and completes f
         const manifest = JSON.parse(readFileSync(join(root, '.acceptora/install-manifest.json'), 'utf8'));
         assert.equal(manifest.client, client);
         assert.equal(manifest.package_version, PACKAGE_VERSION);
+        assert.equal(manifest.instruction, '');
+        assert.equal(manifest.created_files.instruction, false);
         assert.equal(Object.keys(manifest.payload).length, 5);
         assert.equal(readFileSync(join(root, TOKEN_FILE), 'utf8'), `${TOKEN_ENV}=${TOKEN}\n`);
         assert.match(stdout.value, /Add \/\.acceptora-env to \.gitignore/);
         assert.doesNotMatch(`${stdout.value}${stderr.value}${nonCredentialFileText(root)}`, new RegExp(TOKEN));
 
         if (client === 'codex') {
-          const mcp = readFileSync(join(root, paths[2]), 'utf8');
+          const mcp = readFileSync(join(root, paths[1]), 'utf8');
           assert.match(mcp, /http_headers_helper = 'node "\.agents\/skills\/acceptora\/scripts\/mcp-headers\.mjs"'/);
           assert.doesNotMatch(mcp, /bearer_token_env_var/);
         }
         if (client === 'claude-code') {
-          const mcp = JSON.parse(readFileSync(join(root, paths[2]), 'utf8'));
+          const mcp = JSON.parse(readFileSync(join(root, paths[1]), 'utf8'));
           assert.equal(mcp.mcpServers.acceptora.headersHelper, 'node ".claude/skills/acceptora/scripts/mcp-headers.mjs"');
           assert.equal(mcp.mcpServers.acceptora.headers, undefined);
         }
         if (client === 'gemini-cli') {
-          const mcp = JSON.parse(readFileSync(join(root, paths[2]), 'utf8'));
+          const mcp = JSON.parse(readFileSync(join(root, paths[1]), 'utf8'));
           assert.equal(mcp.mcpServers.acceptora.headers.Authorization, `Bearer \${${TOKEN_ENV}}`);
           const settings = JSON.parse(readFileSync(join(root, '.gemini/settings.json'), 'utf8'));
           assert.deepEqual(settings.security.environmentVariableRedaction.allowed, [TOKEN_ENV]);
@@ -216,6 +221,30 @@ test('install stores the key only in the project credential file and completes f
         rmSync(root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test('update removes a legacy managed instruction block and stops owning the client file', async () => {
+  const root = createProject({ 'AGENTS.md': `User instruction.\n${LEGACY_INSTRUCTION}\n` });
+  try {
+    const { runtime, stderr } = testRuntime(root);
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 0, stderr.value);
+
+    const manifestPath = join(root, '.acceptora/install-manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.instruction = LEGACY_INSTRUCTION;
+    manifest.created_files.instruction = false;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+    assert.equal(await main(['update'], runtime), 0, stderr.value);
+    assert.equal(readFileSync(join(root, 'AGENTS.md'), 'utf8'), 'User instruction.\n');
+
+    const updatedManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    assert.equal(updatedManifest.instruction, '');
+    assert.equal(updatedManifest.created_files.instruction, false);
+    assert.equal(await main(['doctor'], runtime), 0, stderr.value);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -586,7 +615,7 @@ test('token-shaped command arguments are never echoed', async () => {
   }
 });
 
-test('install rejects invalid verification instructions before writing', async () => {
+test('install and update do not couple project key validation to verification instructions', async () => {
   const root = createProject();
   try {
     const { runtime, stderr } = testRuntime(root, {
@@ -598,10 +627,10 @@ test('install rejects invalid verification instructions before writing', async (
         }), { status: 200 }))
         : fakeFetch(url, options),
     });
-    assert.equal(await main(['install', '--client', 'codex'], runtime), 2);
-    assert.match(stderr.value, /invalid verification instructions/);
-    assert.equal(existsSync(join(root, '.acceptora')), false);
-    assert.equal(existsSync(join(root, '.agents')), false);
+    assert.equal(await main(['install', '--client', 'codex'], runtime), 0, stderr.value);
+    assert.equal(await main(['update'], runtime), 0, stderr.value);
+    assert.equal(existsSync(join(root, '.acceptora/config.json')), true);
+    assert.equal(existsSync(join(root, '.agents/skills/acceptora/SKILL.md')), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -691,7 +720,7 @@ test('update and uninstall restore the complete installation when a write fails'
         const mutation = testRuntime(root, {
           atomicWrite: (path, content, write) => {
             writes += 1;
-            if (writes === 2) {
+            if (writes === (command === 'update' ? 2 : 1)) {
               throw new Error('synthetic write failure');
             }
             write(path, content);

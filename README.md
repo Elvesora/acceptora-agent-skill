@@ -58,10 +58,9 @@ The installer writes only project-local state:
 - `.acceptora/install-manifest.json` with installer ownership hashes;
 - `.acceptora-env` with the validated project key;
 - `.agents/skills/acceptora`, `.claude/skills/acceptora`, or `.gemini/skills/acceptora`;
-- one managed client-instruction line; and
 - `.codex/config.toml`, `.mcp.json`, or `.gemini/settings.json` for the project-native MCP connection.
 
-Unrelated instructions and client settings are preserved. An unmanaged conflicting `acceptora` MCP entry fails visibly instead of being overwritten.
+The installer never modifies `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`. Invoke Acceptora directly by name and describe the task when you want to use it. Unrelated instructions and client settings are preserved. An unmanaged conflicting `acceptora` MCP entry fails visibly instead of being overwritten.
 
 ## Verification instructions
 
