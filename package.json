@@ -1,6 +1,6 @@
 {
   "name": "acceptora-agent-skill",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "description": "Project-local Acceptora skill and MCP installer for coding agents",
   "license": "MIT",
   "type": "module",

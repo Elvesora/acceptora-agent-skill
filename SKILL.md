@@ -26,6 +26,7 @@ The preflight also reports whether the installed skill is behind the latest publ
 - Send structured verification state and safe source identity, not repository contents, credentials, environment files, cookies, private data, or raw logs.
 - Preserve existing human decisions. Change or reopen a verification item only when its definition or covered implementation materially changed.
 - Use current revisions and a new idempotency key for a new logical write. On a revision conflict, refetch context and regenerate the affected state.
+- Update project verification instructions only when the user explicitly asks for that change and the current credential has the optional `instructions:write` scope. Read the current project instruction revision first, preserve all three fields in the replacement payload, and never change account instructions or human decisions.
 
 Read [API and MCP](references/api-mcp.md) only when choosing a transport, calling operations, or handling an API failure.
 

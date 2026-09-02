@@ -29,7 +29,7 @@ Fetch them before work and again immediately before writing manual verification 
 
 ## Workflow operations
 
-MCP exposes eight tools. REST exposes the same operations:
+MCP exposes nine tools. REST exposes the same operations:
 
 | MCP tool | REST path |
 |---|---|
@@ -41,6 +41,9 @@ MCP exposes eight tools. REST exposes the same operations:
 | `get_verification_status` | `POST /api/v1/integrations/status` |
 | `check_completion_gate` | `POST /api/v1/integrations/completion-gate` |
 | `record_verification_exception` | `POST /api/v1/integrations/verification-exceptions` |
+| `update_project_verification_instructions` | `PUT /api/v1/integrations/project/verification-instructions` |
+
+`update_project_verification_instructions` is an optional, explicitly authorized operation. Call it only when the user asks to edit this project's guidance and the credential has `instructions:write`. First read the current `project_revision`, then send that revision and all three instruction fields as a complete replacement with a new idempotency key. A `null` field restores inheritance from the account setting or Acceptora default. The operation cannot edit account instructions or make human verification decisions.
 
 A typical implementation flow is:
 

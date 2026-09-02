@@ -4,6 +4,16 @@ All notable changes to Acceptora Agent Skill are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-09-02
+
+### Added
+
+- Document the explicitly authorized `update_project_verification_instructions` MCP/REST operation and optional `instructions:write` scope.
+
+### Changed
+
+- Confirm the authenticated project connection only after every install or update health check passes.
+
 ## [1.0.2] - 2026-09-02
 
 ### Changed

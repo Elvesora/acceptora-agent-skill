@@ -73,6 +73,8 @@ Account and project owners can define guidance for:
 
 The agent fetches the effective instructions before work and fetches them again immediately before it creates or revises manual steps. It never substitutes a stale local snapshot.
 
+When a user explicitly asks an agent to edit this project's guidance, the optional `instructions:write` capability exposes the same revision-guarded project-only update through MCP and REST. Account instructions and human verification decisions remain outside that operation.
+
 ## MCP and REST
 
 The project MCP endpoint is `https://www.acceptora.com/mcp`. REST exposes the same workflow operations and a live OpenAPI document, so any language can integrate without this skill. See [API and MCP](references/api-mcp.md).
