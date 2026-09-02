@@ -4,6 +4,19 @@ All notable changes to Acceptora Agent Skill are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-09-02
+
+### Changed
+
+- Make Acceptora an explicitly invoked, auxiliary skill and stop modifying `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md` during installation.
+- Remove an exact legacy installer-owned instruction block during update or uninstall without taking ownership of the surrounding client instruction file.
+- Keep primary implementation work running when Acceptora preflight is degraded; only Acceptora reads, writes, and synchronization become unavailable.
+
+### Fixed
+
+- Accept effective default verification instructions returned by the API as strings with `configured: false`.
+- Keep installer key validation independent from the optional verification-instruction payload.
+
 ## [1.0.4] - 2026-09-02
 
 ### Added
